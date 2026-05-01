@@ -1,0 +1,39 @@
+# ==============================
+# Entorno Virtual y Dependencias
+# ==============================
+venv/
+.venv/
+env/
+npm-debug.log
+
+
+# ==============================
+# Python
+# ==============================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ==============================
+# Variables de Entorno y Secretos
+# ==============================
+.env
+*.env
+
+# ==============================
+# Base de Datos local / IDEs
+# ==============================
+*.db
+*.sqlite3
+.vscode/
+Thumbs.db
+.idea/
+
+# ==============================
+# Docker y Logs
+# ==============================
+*.log
+.docker/
