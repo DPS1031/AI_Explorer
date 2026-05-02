@@ -1,0 +1,48 @@
+name: AI-explorer
+services:
+  postgres:
+    image: postgres:18
+    networks:
+      - pharmacy-network
+    container_name: Pharmacy-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+
+      - type: bind
+        source: ./database/init.sql
+        target: /docker-entrypoint-initdb.d/init.sql
+        read_only: true
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+  streamlit:
+    build: ./
+    container_name: Streamlit-AI-explorer
+    ports:
+      - 8501:8501
+    env_file: 
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - pharmacy-network
+    volumes:
+      - ./app:/app/app
+    command: streamlit run app/main.py --server.port 8501
+
+networks:
+  pharmacy-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
