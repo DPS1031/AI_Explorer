@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS customers(
     name VARCHAR(255) NOT NULL,
     email VARCHAR(255) NOT NULL UNIQUE,
     contact_number VARCHAR(20) NOT NULL,
-    direction VARCHAR(255) NOT NULL,
+    address VARCHAR(255) NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS products(
@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS conversations(
     title VARCHAR(255) NULL,
     costumers_id INTEGER NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT fk_id_users FOREIGN KEY (costumers_id) REFERENCES customers(id)
+    CONSTRAINT fk_id_costumers FOREIGN KEY (costumers_id) REFERENCES customers(id)
 );
 
 CREATE TABLE IF NOT EXISTS messages(

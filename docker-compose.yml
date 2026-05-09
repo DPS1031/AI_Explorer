@@ -4,7 +4,7 @@ services:
     image: postgres:18
     networks:
       - pharmacy-network
-    container_name: Pharmacy-db
+    container_name: Pharmacy_db
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -24,6 +24,20 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  seeder:
+    build: 
+      context: ./seeder
+    networks:
+      - pharmacy-network
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # On utilise 'postgres' (le nom du service) comme hôte
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
   streamlit:
     build: ./
     container_name: Streamlit-AI-explorer
@@ -34,6 +48,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      seeder:
+        condition: service_completed_successfully
     networks:
       - pharmacy-network
     volumes:
