@@ -11,6 +11,7 @@ from app.services.ai_service import (
     extract_product_term,
     generate_sql,
     classify_chart_type,
+    summarize_query_results,
     validate_sql,
 )
 from app.services.db_service import execute_query, find_matching_products
@@ -468,14 +469,51 @@ def render_chat_history():
 
 
 def render_chart(df: pd.DataFrame, chart_type: str):
-    """Renders a chart based on the classified type."""
-    if chart_type == "BAR":
-        st.bar_chart(df.set_index(df.columns[0])[df.columns[1]])
-    elif chart_type == "LINE":
-        st.line_chart(df.set_index(df.columns[0])[df.columns[1]])
-    elif chart_type == "PIE":
-        fig = px.pie(df, names=df.columns[0], values=df.columns[1])
-        st.plotly_chart(fig, use_container_width=True, key=f"pie_{uuid.uuid4().hex[:8]}")
+    """Renders a chart based on the classified type.
+    Automatically detects the best label (categorical) and value (numeric) columns.
+    """
+    if chart_type == "NONE" or df.empty or len(df.columns) < 2:
+        return
+
+    # Find the best label column (first string/object column) and value column (first numeric column)
+    label_col = None
+    value_col = None
+
+    for col in df.columns:
+        if label_col is None and df[col].dtype == "object":
+            label_col = col
+        if value_col is None and pd.api.types.is_numeric_dtype(df[col]):
+            # Skip ID-like columns (all unique integers that look like sequential IDs)
+            if df[col].dtype in ["int64", "int32"] and col.lower().endswith("id"):
+                continue
+            value_col = col
+
+    # Fallback: if no string column found, use first column as label
+    if label_col is None:
+        label_col = df.columns[0]
+    # Fallback: if no numeric column found, use second column
+    if value_col is None:
+        for col in df.columns:
+            if col != label_col and pd.api.types.is_numeric_dtype(df[col]):
+                value_col = col
+                break
+    if value_col is None:
+        value_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+
+    try:
+        chart_df = df[[label_col, value_col]].copy()
+        chart_df[label_col] = chart_df[label_col].astype(str)
+
+        if chart_type == "BAR":
+            st.bar_chart(chart_df.set_index(label_col)[value_col])
+        elif chart_type == "LINE":
+            st.line_chart(chart_df.set_index(label_col)[value_col])
+        elif chart_type == "PIE":
+            fig = px.pie(chart_df, names=label_col, values=value_col)
+            st.plotly_chart(fig, use_container_width=True, key=f"pie_{uuid.uuid4().hex[:8]}")
+    except Exception:
+        # If chart rendering fails, silently skip — the data table is still shown
+        pass
 
 
 def handle_conversational(prompt: str):
@@ -493,10 +531,9 @@ def handle_conversational(prompt: str):
             except Exception:
                 pass
 
-            if products_data:
-                response = generate_conversational_with_products(prompt, products_data)
-            else:
-                response = generate_conversational_response(prompt)
+            # Always use the products-aware prompt for consistency
+            # It handles both cases: with products and without
+            response = generate_conversational_with_products(prompt, products_data)
 
         st.markdown(response)
 
@@ -577,10 +614,7 @@ def handle_database_query(prompt: str):
             use_container_width=True,
         )
 
-        response_text = (
-            f"I found {len(rows)} result(s) for your query.\n\n"
-            "Is there anything else I can help you with? 😊"
-        )
+        response_text = summarize_query_results(prompt, columns, rows)
     else:
         if not response_text:
             response_text = "No results found for your query."

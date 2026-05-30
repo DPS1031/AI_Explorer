@@ -117,6 +117,14 @@ Rules:
 - The tables you must query are: categories, suppliers, customers, products, product_images, inventory, orders, order_items, order_status_history, conversations, messages.
 - When filtering by product name, ALWAYS use the EXACT name provided in quotes.
 - This prompt is ONLY reached when the question requires database access. Generate SQL accordingly.
+
+Important data relationships:
+- To find "best selling" or "most sold" products, you MUST join order_items with products and SUM the quantity column from order_items. The order_items table tracks what was actually sold.
+- The inventory table shows current stock levels (actual_stock), NOT sales.
+- The orders table has the total amount and status. order_items has the individual products in each order.
+- To calculate revenue per product, multiply order_items.products_price * order_items.quantity.
+- When asked about "sales" or "sold", always use order_items joined with products.
+- When asked about "stock" or "available", use the inventory table.
 """
 
 EXTRACT_PRODUCT_PROMPT = """You are an assistant that analyzes questions about sales in a pharmacy.
@@ -139,24 +147,34 @@ Examples:
 """
 
 CHART_CLASSIFICATION_PROMPT = """You are a data visualization expert for a pharmacy system.
-Given a user question, determine if the results would benefit from a chart.
+Given a user question, determine if the results would benefit from a chart visualization.
 
 Rules:
 - Respond ONLY with one word: BAR, LINE, PIE, or NONE
-- BAR: rankings, comparisons, top N products, quantities by category
-- LINE: trends over time, sales evolution, monthly/weekly data
-- PIE: distributions, percentages, proportions of a whole
-- NONE: single values, prices, specific product info, yes/no questions
+- BAR: rankings, comparisons, top/bottom N items, quantities by category, sorted lists, "most/least" questions
+- LINE: trends over time, evolution, monthly/weekly/daily data, historical patterns
+- PIE: distributions as proportions, percentage breakdowns, status compositions, market share
+- NONE: single values, specific lookups, yes/no questions, detailed lists without aggregation, price checks
+
+Key principles:
+- If the question asks for items sorted by quantity/amount → BAR
+- If the question asks for proportions or "by status/category" without time → PIE
+- If the question involves time periods or evolution → LINE
+- If the question asks for a specific value or detail → NONE
+- When in doubt between BAR and NONE, prefer BAR if there are multiple items being compared
 
 Examples:
 - "top 10 best selling products" -> BAR
+- "products from most sold to least sold" -> BAR
+- "which products sell the most" -> BAR
 - "sales trend over the last 6 months" -> LINE
+- "monthly revenue this year" -> LINE
 - "distribution of products by category" -> PIE
+- "orders by status" -> PIE
+- "what percentage of orders are cancelled" -> PIE
 - "what is the price of ibuprofen" -> NONE
 - "how many units of amoxicillin do we have" -> NONE
-- "orders by status" -> PIE
-- "monthly revenue this year" -> LINE
-- "which supplier has most products" -> BAR
+- "show me customer details" -> NONE
 """
 
 INTENT_CLASSIFICATION_PROMPT = """You are an intent classifier for a pharmacy AI assistant.
@@ -220,22 +238,36 @@ Rules:
 - Keep responses under 300 words unless the topic requires more detail.
 """
 
+DATA_SUMMARY_PROMPT = """You are a friendly pharmacy assistant that explains database query results in natural language.
+Given the user's original question and the query results, provide a clear, concise summary of the data.
+
+Rules:
+- Summarize the results in a natural, conversational way.
+- Mention specific numbers, names, and values from the data.
+- Keep it brief (2-4 sentences max) unless the data is complex.
+- Do NOT mention SQL, queries, databases, or technical details.
+- Do NOT use markdown tables — the data will be shown separately in a chart/table.
+- Be warm and helpful, like a pharmacist explaining information to a customer.
+- If the data has rankings or comparisons, highlight the top items.
+- If the data shows trends, mention the direction.
+"""
+
 CONVERSATIONAL_WITH_PRODUCTS_PROMPT = """You are a friendly and knowledgeable pharmacy assistant.
 You help customers with general pharmaceutical questions and recommend products from our pharmacy.
 
 The user asked a health-related question. Below you have:
 1. The user's question
-2. Products available in our pharmacy that may help
+2. Products available in our pharmacy that may help (if any were found)
 
 Rules:
 - First, provide a brief medical explanation about the condition/symptoms (2-3 sentences max).
-- Then, recommend the available products from the list below with their details (name, dosage, form, price, laboratory).
+- Then, if products were found, recommend them with their details (name, dosage, form, price, laboratory).
 - Format prices nicely (e.g., $25,000 COP or the appropriate format).
-- End by asking if they'd like to place an order for any of the recommended products.
-- If no products were found, still give the medical advice but mention we don't currently have matching products in stock.
-- Respond in the same language the user uses (Spanish or English).
+- If products were found, end by asking if they'd like to place an order for any of the recommended products.
+- If no products were found, still give the medical advice and mention that we don't currently have matching products in stock, but suggest they visit the pharmacy for more options.
 - Be warm and professional, like a pharmacist helping a customer.
 - Always recommend consulting a doctor for serious or persistent symptoms.
+- ALWAYS try to be helpful and provide actionable advice regardless of whether products were found.
 """
 
 
@@ -372,6 +404,37 @@ def classify_chart_type(prompt: str) -> str:
     if result not in ["BAR", "LINE", "PIE"]:
         return "NONE"
     return result
+
+
+def summarize_query_results(prompt: str, columns: list[str], rows: list[tuple]) -> str:
+    """Generates a natural language summary of the query results."""
+    # Format the data as a readable table for the AI
+    if not rows:
+        return "No results were found for your query."
+
+    data_text = f"Columns: {', '.join(columns)}\n"
+    for row in rows[:20]:  # Limit to 20 rows to avoid token overflow
+        data_text += f"  {', '.join(str(v) for v in row)}\n"
+    if len(rows) > 20:
+        data_text += f"  ... and {len(rows) - 20} more rows.\n"
+
+    user_message = (
+        f"User question: {prompt}\n\n"
+        f"Query results ({len(rows)} row(s)):\n{data_text}"
+    )
+
+    try:
+        result = generate_content(
+            contents=user_message,
+            system_prompt=DATA_SUMMARY_PROMPT + "\n\n" + RESPONSE_LANGUAGE_INSTRUCTION,
+            temperature=0.7,
+            max_completion_tokens=200,
+        )
+    except Exception as e:
+        return f"I found {len(rows)} result(s) for your query."
+    if result is None:
+        return f"I found {len(rows)} result(s) for your query."
+    return result.strip()
 
 
 def validate_sql(sql: str) -> tuple[bool, str]:
