@@ -1,73 +1,62 @@
 import os
-import threading
-from google import genai
+from openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
 
+MODEL_NAME = "gpt-4o-mini"
 
-class GeminiKeyManager:
-    """Manages multiple Gemini API keys with automatic rotation on rate limit errors."""
-
-    def __init__(self):
-        keys_raw = os.getenv("GEMINI_API_KEYS", "")
-        self._keys = [k.strip() for k in keys_raw.split(",") if k.strip()]
-        if not self._keys:
-            raise ValueError("No GEMINI_API_KEYS found in environment variables.")
-        self._current_index = 0
-        self._lock = threading.Lock()
-
-    @property
-    def current_key(self) -> str:
-        with self._lock:
-            return self._keys[self._current_index]
-
-    def rotate(self) -> str:
-        """Rotate to the next available key. Returns the new key."""
-        with self._lock:
-            self._current_index = (self._current_index + 1) % len(self._keys)
-            return self._keys[self._current_index]
-
-    @property
-    def total_keys(self) -> int:
-        return len(self._keys)
-
-    def get_client(self) -> genai.Client:
-        """Creates a Gemini client with the current API key."""
-        return genai.Client(api_key=self.current_key)
-
-    def generate_with_retry(self, model: str, contents: str) -> str:
-        """Calls Gemini with automatic key rotation on rate limit errors.
-        Tries all available keys before raising the error.
-        """
-        attempts = 0
-        last_error = None
-
-        while attempts < self.total_keys:
-            try:
-                client = self.get_client()
-                response = client.models.generate_content(
-                    model=model, contents=contents
-                )
-                return response.text
-            except Exception as e:
-                error_str = str(e).lower()
-                # Detect rate limit / quota errors
-                if any(
-                    keyword in error_str
-                    for keyword in ["429", "resource_exhausted", "quota", "rate limit"]
-                ):
-                    last_error = e
-                    self.rotate()
-                    attempts += 1
-                else:
-                    # Non-rate-limit error, raise immediately
-                    raise e
-
-        raise Exception(
-            f"All {self.total_keys} API keys exhausted. Last error: {last_error}"
-        )
+_client = None
 
 
-# Singleton instance — shared across the app
-key_manager = GeminiKeyManager()
+def _get_client() -> OpenAI:
+    """Lazy initialization of the OpenAI client."""
+    global _client
+    if _client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "OPENAI_API_KEY not found in environment variables. "
+                "Please set it in your .env file."
+            )
+        _client = OpenAI(api_key=api_key)
+    return _client
+
+
+def generate_content(
+    contents: str,
+    system_prompt: str | None = None,
+    temperature: float = 0.7,
+    max_completion_tokens: int | None = None,
+) -> str | None:
+    """Calls OpenAI chat completion API.
+
+    Args:
+        contents: The user message/prompt.
+        system_prompt: Optional system message for context.
+        temperature: Controls randomness (0.0 for deterministic).
+        max_completion_tokens: Limit output tokens for short responses.
+
+    Returns:
+        The assistant's response text, or None on failure.
+    """
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": contents})
+
+    kwargs = {
+        "model": MODEL_NAME,
+        "messages": messages,
+        "temperature": temperature,
+    }
+    if max_completion_tokens is not None:
+        kwargs["max_completion_tokens"] = max_completion_tokens
+
+    client = _get_client()
+    try:
+        response = client.chat.completions.create(**kwargs)
+        return response.choices[0].message.content
+    except Exception as e:
+        print(f"[OpenAI Error] {type(e).__name__}: {e}")
+        raise

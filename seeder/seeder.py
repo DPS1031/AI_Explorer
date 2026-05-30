@@ -2,6 +2,7 @@ import psycopg2
 import os
 import time
 import random
+import hashlib
 from dotenv import load_dotenv
 from faker import Faker
 
@@ -24,7 +25,7 @@ def get_connection():
             return conn
         except psycopg2.OperationalError:
             retries -= 1
-            print(f"Wating for database... ({10 - retries}/10)")
+            print(f"Waiting for database... ({10 - retries}/10)")
             time.sleep(3)
     raise Exception("Couldn't connect to the database after 10 tries")
 
@@ -413,7 +414,7 @@ def seed_product_images(conn, products_id):
             )
             product_images_ids.append(cur.fetchone()[0])
     conn.commit()
-    print("✅ Imágenes vinculadas correctamente.")
+    print("✅ Product images linked successfully.")
     return product_images_ids
 
 
@@ -514,31 +515,68 @@ def seed_order_status_history(conn, order_ids):
     conn.commit()
 
 
-def seed_conversations(conn, customer_ids, num_conversations=25):
+def hash_password(password: str) -> str:
+    """Generates a secure password hash using PBKDF2."""
+    salt = os.urandom(16)
+    pwd_hash = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 100000)
+    return salt.hex() + ":" + pwd_hash.hex()
+
+
+def seed_users(conn):
+    """Creates test users for the login system."""
+    print("Inserting test users...")
+    test_users = [
+        {"name": "David Admin", "email": "david@pharmacy.com", "password": "123456"},
+        {"name": "Maria Garcia", "email": "maria@pharmacy.com", "password": "123456"},
+        {"name": "Carlos Lopez", "email": "carlos@pharmacy.com", "password": "123456"},
+    ]
+    user_ids = []
+    with conn.cursor() as cur:
+        for user in test_users:
+            password_hash = hash_password(user["password"])
+            cur.execute(
+                "INSERT INTO users (name, email, password_hash) VALUES (%s, %s, %s) RETURNING id;",
+                (user["name"], user["email"], password_hash),
+            )
+            user_ids.append(cur.fetchone()[0])
+    conn.commit()
+    print(f"✅ {len(test_users)} test users inserted.")
+    print("   📧 Login credentials:")
+    for user in test_users:
+        print(f"      - {user['email']} / {user['password']}")
+    return user_ids
+
+
+def seed_conversations(conn, user_ids, num_conversations=25):
     print(f"Inserting {num_conversations} conversations...")
     titles = [
-        "Consulta sobre medicamentos para el dolor",
-        "Pregunta sobre antibióticos y efectos secundarios",
-        "Información sobre vitaminas para el sistema inmune",
-        "Duda sobre dosis de antiinflamatorios",
-        "Asesoría en productos dermatológicos para acné",
-        "Consulta sobre antigripales y contraindicaciones",
-        "Disponibilidad de medicamentos crónicos",
-        "Preguntas sobre almacenamiento de insulina",
-        "Interacciones entre medicamentos",
-        "Sustitutos genéricos para analgésicos",
+        "Pain medication recommendations",
+        "Antibiotics side effects inquiry",
+        "Vitamins for immune system support",
+        "Anti-inflammatory dosage question",
+        "Dermatological products for acne",
+        "Cold and flu medication options",
+        "Chronic medication availability",
+        "Insulin storage guidelines",
+        "Drug interaction concerns",
+        "Generic substitutes for analgesics",
+        "Best vitamins for energy and fatigue",
+        "Allergy medication without drowsiness",
+        "Post-surgery pain management",
+        "Children's fever medication dosage",
+        "Skin rash treatment options",
     ]
     conversation_ids = []
     with conn.cursor() as cur:
         for _ in range(num_conversations):
             title = random.choice(titles)
-            c_id = random.choice(customer_ids)
+            u_id = random.choice(user_ids)
             created_at = fake.date_time_this_year()
 
             cur.execute(
-                """INSERT INTO conversations (title, costumers_id, created_at) 
+                """INSERT INTO conversations (title, user_id, created_at) 
                    VALUES (%s, %s, %s) RETURNING id;""",
-                (title, c_id, created_at),
+                (title, u_id, created_at),
             )
             conversation_ids.append(cur.fetchone()[0])
     conn.commit()
@@ -547,25 +585,123 @@ def seed_conversations(conn, customer_ids, num_conversations=25):
 
 def seed_messages(conn, conversation_ids):
     print(f"Generating messages for {len(conversation_ids)} conversations...")
+
+    # Contextual message pairs (user question, assistant answer) grouped by topic
+    message_templates = {
+        "Pain medication recommendations": [
+            ("What do you recommend for chronic back pain?", "For chronic back pain, I'd suggest starting with Ibuprofen 400mg or Naproxen 550mg. Both are effective NSAIDs. If the pain is severe, Tramadol 50mg may be appropriate but requires a prescription."),
+            ("Is Acetaminophen safe to take daily?", "Acetaminophen 500mg is generally safe for short-term daily use, but prolonged use exceeding 3g per day can cause liver damage. I'd recommend consulting your doctor for long-term pain management."),
+            ("Can I combine Ibuprofen with Acetaminophen?", "Yes, you can alternate between Ibuprofen and Acetaminophen as they work through different mechanisms. However, avoid taking multiple NSAIDs together like Ibuprofen and Naproxen."),
+        ],
+        "Antibiotics side effects inquiry": [
+            ("What are the common side effects of Amoxicillin?", "Common side effects of Amoxicillin include nausea, diarrhea, and skin rash. If you experience difficulty breathing or severe swelling, seek immediate medical attention as it could indicate an allergic reaction."),
+            ("How long should I take Azithromycin?", "Azithromycin is typically prescribed as a 5-day course (500mg on day 1, then 250mg for days 2-5). It's important to complete the full course even if you feel better to prevent antibiotic resistance."),
+            ("Can I drink alcohol while on Metronidazole?", "No, you should absolutely avoid alcohol while taking Metronidazole and for at least 48 hours after finishing the course. The combination can cause severe nausea, vomiting, and abdominal cramps."),
+        ],
+        "Vitamins for immune system support": [
+            ("What vitamins should I take to boost my immune system?", "For immune support, I recommend Vitamin C 1000mg daily, Vitamin D3 2000 IU (especially if you have limited sun exposure), and a B-Complex for overall energy. Our Multivitamin gummies from Centrum are also a great all-in-one option."),
+            ("Is it okay to take multiple vitamins at once?", "Yes, most vitamins can be taken together. However, take fat-soluble vitamins (D, E, A, K) with food for better absorption. Space out calcium and iron supplements as they compete for absorption."),
+            ("Do I need Vitamin D if I spend time outdoors?", "Even with outdoor time, many people are deficient in Vitamin D, especially during winter months. A blood test can confirm your levels. Our Vitamin D3 2000 IU softgels from Nature Made are a popular choice."),
+        ],
+        "Anti-inflammatory dosage question": [
+            ("What's the correct dosage for Meloxicam?", "Meloxicam is typically prescribed at 7.5mg to 15mg once daily for osteoarthritis. Always take it with food to reduce stomach irritation. Don't exceed 15mg per day."),
+            ("How does Prednisolone work for inflammation?", "Prednisolone is a corticosteroid that suppresses the immune system's inflammatory response. It's very effective for severe allergic reactions and autoimmune conditions, but should only be used short-term due to side effects."),
+            ("Is Celecoxib safer for the stomach than Ibuprofen?", "Yes, Celecoxib is a COX-2 selective inhibitor, which means it causes fewer gastrointestinal side effects compared to traditional NSAIDs like Ibuprofen. However, it still carries cardiovascular risks with long-term use."),
+        ],
+        "Dermatological products for acne": [
+            ("What's the best treatment for mild acne?", "For mild acne, I recommend starting with Benzoyl Peroxide 5% gel from Galderma. Apply a thin layer to affected areas once daily. If irritation occurs, reduce to every other day until your skin adjusts."),
+            ("Can I use Hydrocortisone on my face?", "Hydrocortisone 1% can be used on the face for short periods (up to 7 days) for conditions like eczema or dermatitis. However, prolonged facial use can thin the skin. It's not recommended for acne treatment."),
+            ("What do you have for fungal skin infections?", "For fungal infections, we have Clotrimazole 1% topical cream and Ketoconazole cream. Clotrimazole is great for athlete's foot and ringworm, while Ketoconazole works well for seborrheic dermatitis."),
+        ],
+        "Cold and flu medication options": [
+            ("What can I take for a stuffy nose and cough?", "For nasal congestion, Loratadine 10mg is a good non-drowsy antihistamine. If you also have a cough with wheezing, Salbutamol inhaler can help open your airways. For general cold symptoms, rest and fluids are essential."),
+            ("Which antihistamine won't make me sleepy?", "Fexofenadine 120mg is our best non-drowsy option. Loratadine and Cetirizine are also second-generation antihistamines with minimal sedation, though some people find Cetirizine slightly more sedating."),
+            ("I have seasonal allergies, what do you recommend?", "For seasonal allergies, Cetirizine 10mg is very effective for hay fever and itchy eyes. Take it once daily. If nasal symptoms are predominant, Budesonide nasal spray provides targeted relief with minimal systemic effects."),
+        ],
+        "Chronic medication availability": [
+            ("Do you have Metformin in stock?", "I'd need to check our current inventory for Metformin. We typically carry 500mg and 850mg tablets. Would you like me to check availability and pricing for you?"),
+            ("Can I get a 3-month supply of my blood pressure medication?", "We can provide up to a 90-day supply for chronic medications with a valid prescription. This often comes with cost savings compared to monthly refills. Please bring your prescription and I'll check what we can arrange."),
+            ("What generic options do you have for cholesterol medication?", "We carry several generic statins including Atorvastatin and Simvastatin, which are equivalent to brand-name Lipitor and Zocor. Generics offer the same efficacy at a significantly lower cost."),
+        ],
+        "Insulin storage guidelines": [
+            ("How should I store my insulin at home?", "Unopened insulin should be stored in the refrigerator at 2-8°C (36-46°F). Once opened, most insulin pens can be kept at room temperature (below 30°C) for up to 28 days. Never freeze insulin."),
+            ("What happens if insulin gets too warm?", "Insulin exposed to temperatures above 30°C (86°F) degrades faster and loses effectiveness. If your insulin has been left in a hot car or direct sunlight, it's safer to discard it and use a new vial or pen."),
+            ("Can I travel with insulin on a plane?", "Yes, insulin is allowed in carry-on luggage. Keep it in an insulated travel case with ice packs. Carry a doctor's letter and keep it in original packaging. Never put insulin in checked baggage as the cargo hold can freeze."),
+        ],
+        "Drug interaction concerns": [
+            ("Can I take Ibuprofen with my blood pressure medication?", "NSAIDs like Ibuprofen can reduce the effectiveness of blood pressure medications and may increase blood pressure. Acetaminophen is generally a safer pain relief option if you're on antihypertensives."),
+            ("Are there interactions between Azithromycin and antacids?", "Yes, antacids containing aluminum or magnesium can reduce Azithromycin absorption. Take Azithromycin at least 1 hour before or 2 hours after antacids to ensure full effectiveness."),
+            ("I'm on Warfarin, what pain relievers are safe?", "With Warfarin, avoid all NSAIDs (Ibuprofen, Naproxen, Aspirin) as they increase bleeding risk. Acetaminophen in moderate doses (up to 2g/day) is the safest option. Always inform your doctor about any new medications."),
+        ],
+        "Generic substitutes for analgesics": [
+            ("Is generic Ibuprofen as effective as Advil?", "Yes, generic Ibuprofen contains the same active ingredient in the same dosage as Advil. The FDA requires generics to be bioequivalent, meaning they work the same way in your body. The only difference is price."),
+            ("What's the cheapest option for headache relief?", "Generic Acetaminophen 500mg tablets from Genfar are our most affordable option for headache relief. They're equally effective as brand-name Tylenol at a fraction of the cost."),
+            ("Do you have a generic version of Celebrex?", "Yes, we carry Celecoxib 200mg capsules which is the generic equivalent of Celebrex. It's a COX-2 selective anti-inflammatory that's easier on the stomach than traditional NSAIDs."),
+        ],
+        "Best vitamins for energy and fatigue": [
+            ("I've been feeling tired all the time, what vitamins help?", "Persistent fatigue can be helped with B-Complex vitamins (especially B12), Iron supplements, and Vitamin D3. I'd also recommend getting blood work done to check for deficiencies. Our Solgar B-Complex is a popular choice."),
+            ("What's the difference between B12 and B-Complex?", "B12 is a single vitamin focused on nerve function and red blood cell production. B-Complex contains all 8 B vitamins working together for energy metabolism, brain function, and cell health. If you're generally fatigued, B-Complex covers more bases."),
+            ("Can Vitamin D deficiency cause tiredness?", "Absolutely. Vitamin D deficiency is one of the most common causes of unexplained fatigue. Our Vitamin D3 2000 IU softgels from Nature Made are recommended for most adults. Consider taking it with a fatty meal for better absorption."),
+        ],
+        "Allergy medication without drowsiness": [
+            ("I need allergy medicine that won't affect my work", "Fexofenadine 120mg is the least sedating antihistamine available. It's ideal for people who need to stay alert. Take it once daily and it provides 24-hour relief from sneezing, runny nose, and itchy eyes."),
+            ("Is Cetirizine really non-drowsy?", "Cetirizine is classified as a second-generation antihistamine with low sedation, but about 10% of people do experience some drowsiness. If that's a concern, Fexofenadine or Loratadine are better alternatives for you."),
+            ("What about nasal sprays for allergies?", "Budesonide nasal spray is excellent for allergy relief without any drowsiness since it works locally in the nasal passages. It's particularly effective for congestion, which oral antihistamines don't address as well."),
+        ],
+        "Post-surgery pain management": [
+            ("What pain medication is recommended after dental surgery?", "After dental surgery, a combination of Ibuprofen 400mg and Acetaminophen 500mg taken together provides excellent pain relief. For the first 24-48 hours, Ketorolac 10mg may be prescribed for more intense pain."),
+            ("How long should I take pain medication after surgery?", "Typically, strong pain medication is needed for 3-5 days post-surgery, then you can transition to milder options. Always follow your surgeon's specific instructions and taper off gradually rather than stopping abruptly."),
+            ("Is Tramadol addictive?", "Tramadol does carry a risk of dependence, especially with prolonged use beyond 2 weeks. It's classified as a controlled substance. For post-surgical pain, short-term use under medical supervision is generally safe. Always follow prescribed dosages."),
+        ],
+        "Children's fever medication dosage": [
+            ("What's the right Acetaminophen dose for a 5-year-old?", "For a 5-year-old (approximately 18-20kg), the recommended Acetaminophen dose is 240-300mg every 4-6 hours. Use the children's liquid formulation with the included measuring device. Don't exceed 5 doses in 24 hours."),
+            ("Can I give my child Ibuprofen for fever?", "Yes, children's Ibuprofen is safe for kids over 6 months old. For fever above 38.5°C, dose by weight: approximately 5-10mg per kg every 6-8 hours. You can alternate with Acetaminophen if needed, but never give both at the same time."),
+            ("When should I take my child to the doctor for fever?", "Seek medical attention if fever exceeds 39.5°C, lasts more than 3 days, is accompanied by rash or stiff neck, or if the child is under 3 months old with any fever. Also if the child appears unusually lethargic or refuses fluids."),
+        ],
+        "Skin rash treatment options": [
+            ("I have a red itchy rash on my arms, what can I use?", "For a general itchy rash, Hydrocortisone 1% ointment applied twice daily can reduce inflammation and itching. If it's widespread, an oral antihistamine like Cetirizine can also help. If it doesn't improve in a week, see a dermatologist."),
+            ("Could my rash be a fungal infection?", "Fungal rashes typically have a ring-shaped pattern with clear center, or appear in warm moist areas. If you suspect fungus, Clotrimazole 1% cream applied twice daily for 2-4 weeks is the first-line treatment. Keep the area clean and dry."),
+            ("What's good for eczema flare-ups?", "For eczema flare-ups, Betamethasone 0.1% cream is effective for moderate to severe patches. Apply thinly once or twice daily for up to 2 weeks. Pair with a fragrance-free moisturizer. For mild cases, Hydrocortisone 1% is sufficient."),
+        ],
+    }
+
+    # Default messages for titles not in the template
+    default_messages = [
+        ("Hi, I have a question about my medication.", "Of course! I'd be happy to help. What medication are you asking about and what would you like to know?"),
+        ("Can you check if a product is in stock?", "I can help with that. Which product are you looking for? I'll check our current inventory for you."),
+        ("What would you recommend for general wellness?", "For general wellness, I'd suggest a daily Multivitamin, Vitamin D3 for bone health, and Omega-3 fatty acids for heart health. Regular exercise and a balanced diet are equally important."),
+    ]
+
     with conn.cursor() as cur:
         for conv_id in conversation_ids:
-            num_messages = random.randint(2, 6)
+            # Get the conversation title to match messages
+            cur.execute("SELECT title FROM conversations WHERE id = %s;", (conv_id,))
+            title = cur.fetchone()[0]
+
+            # Get matching messages or use defaults
+            available_messages = message_templates.get(title, default_messages)
+            num_pairs = random.randint(1, min(3, len(available_messages)))
+            selected_pairs = random.sample(available_messages, num_pairs)
+
             current_time = fake.date_time_this_year()
-            for i in range(num_messages):
-                sender = "user" if i % 2 == 0 else "assistant"
-                if sender == "user":
-                    content = f"{fake.sentence(nb_words=10)}?"
-                else:
-                    content = f"Based on your pharmaceutical inquiry, {fake.paragraph(nb_sentences=2)}"
+            for user_msg, assistant_msg in selected_pairs:
+                # User message
                 image_url = None
-                if sender == "user" and random.random() < 0.2:  # 20% de probabilidad
-                    image_url = (
-                        f"https://amazonaws.com_{random.randint(1000, 9999)}.jpg"
-                    )
+                if random.random() < 0.1:
+                    image_url = f"https://amazonaws.com_{random.randint(1000, 9999)}.jpg"
                 cur.execute(
                     """INSERT INTO messages (sender, conversations_id, message_content, images, created_at) 
                        VALUES (%s, %s, %s, %s, %s);""",
-                    (sender, conv_id, content, image_url, current_time),
+                    ("user", conv_id, user_msg, image_url, current_time),
+                )
+                current_time = fake.date_time_between(
+                    start_date=current_time, end_date="+10m"
+                )
+                # Assistant message
+                cur.execute(
+                    """INSERT INTO messages (sender, conversations_id, message_content, images, created_at) 
+                       VALUES (%s, %s, %s, %s, %s);""",
+                    ("assistant", conv_id, assistant_msg, None, current_time),
                 )
                 current_time = fake.date_time_between(
                     start_date=current_time, end_date="+10m"
@@ -586,7 +722,10 @@ def main():
     if database_has_data(conn):
         return
 
-    # Customers. seeders and suppliers
+    # Users (for login system)
+    user_ids = seed_users(conn)
+
+    # Customers, seeders and suppliers
     sup_ids = seed_suppliers(conn)
     cat_map = seed_categories(conn)
     cust_ids = seed_customers(conn, 10)
@@ -601,11 +740,11 @@ def main():
     seed_order_items(conn, ord_ids, prod_ids)
     seed_order_status_history(conn, ord_ids)
 
-    # AI and interactions
-    conv_ids = seed_conversations(conn, cust_ids, 15)
+    # AI and interactions (conversations now linked to users, not customers)
+    conv_ids = seed_conversations(conn, user_ids, 15)
     seed_messages(conn, conv_ids)
 
-    print("Seeder completed.")
+    print("✅ Seeder completed.")
     conn.close()
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-from app.services.key_manager import key_manager
+from app.services.key_manager import generate_content
 
 DDL = """
 CREATE TABLE IF NOT EXISTS categories(
@@ -79,12 +79,19 @@ CREATE TABLE IF NOT EXISTS order_status_history(
     CONSTRAINT fk_id_orders FOREIGN KEY (orders_id) REFERENCES orders(id),
     CHECK (order_state IN ('pending', 'confirmed', 'delivered', 'cancelled'))
 );
+CREATE TABLE IF NOT EXISTS users(
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE IF NOT EXISTS conversations(
     id SERIAL PRIMARY KEY,
     title VARCHAR(255) NULL,
-    costumers_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT fk_id_costumers FOREIGN KEY (costumers_id) REFERENCES customers(id)
+    CONSTRAINT fk_conversations_user FOREIGN KEY (user_id) REFERENCES users(id)
 );
 CREATE TABLE IF NOT EXISTS messages(
     id SERIAL PRIMARY KEY,
@@ -98,31 +105,36 @@ CREATE TABLE IF NOT EXISTS messages(
 );
 """
 
-SYSTEM_PROMPT = f"""Eres un asistente experto en SQL para PostgreSQL.
-Tu única tarea es generar consultas SQL SELECT válidas basándote en el siguiente DDL:
+SYSTEM_PROMPT = f"""You are an expert SQL assistant for PostgreSQL.
+Your only task is to generate valid SQL SELECT queries based on the following DDL:
 
 {DDL}
 
-Reglas:
-- Solo genera consultas SELECT (nunca INSERT, UPDATE, DELETE, DROP, ALTER, etc.)
-- Responde ÚNICAMENTE con la consulta SQL, sin explicaciones ni markdown.
-- No uses comillas de código ni backticks en tu respuesta.
-- Las tablas donde debes hacer las consultas se llaman categories, suppliers, customers, products, product_images, inventory, orders, order_items, order_status_history, conversations, messages.
-- Cuando filtres por nombre de producto, usa SIEMPRE el nombre EXACTO que se te proporcione entre comillas.
+Rules:
+- Only generate SELECT queries (never INSERT, UPDATE, DELETE, DROP, ALTER, etc.)
+- Respond ONLY with the SQL query, no explanations, no markdown.
+- Do not use code fences or backticks in your response.
+- The tables you must query are: categories, suppliers, customers, products, product_images, inventory, orders, order_items, order_status_history, conversations, messages.
+- When filtering by product name, ALWAYS use the EXACT name provided in quotes.
 - This prompt is ONLY reached when the question requires database access. Generate SQL accordingly.
 """
 
-EXTRACT_PRODUCT_PROMPT = """Eres un asistente que analiza preguntas sobre ventas de una farmacia.
-Dada la siguiente pregunta del usuario, determina si la pregunta hace referencia a un producto específico.
+EXTRACT_PRODUCT_PROMPT = """You are an assistant that analyzes questions about sales in a pharmacy.
+Given the following user question, determine if the question references a specific product.
 
-Si la pregunta menciona un producto (o parte de su nombre), responde ÚNICAMENTE con el término de búsqueda del producto, sin explicaciones.
-Si la pregunta NO hace referencia a un producto específico (ej: "top 5 productos", "total de ventas del mes"), responde ÚNICAMENTE con: NONE
+If the question mentions a product (or part of its name), respond ONLY with the exact search term as written by the user, without translating or modifying it.
+If the question does NOT reference a specific product (e.g. "top 5 products", "total sales this month"), respond ONLY with: NONE
 
-Ejemplos:
+IMPORTANT: Do NOT translate the product name. Return it exactly as the user wrote it.
+
+Examples:
+- "What's the price of Ibuprofen?" -> Ibuprofen
 - "¿Cuánto se vendió de ibuprofeno?" -> ibuprofeno
 - "ventas de paracetamol" -> paracetamol
+- "How much Amoxicillin do we have?" -> Amoxicillin
 - "¿Cuáles son los 5 productos más vendidos?" -> NONE
 - "total de ventas del último mes" -> NONE
+- "show me top selling products" -> NONE
 - "muéstrame las ventas de vitamina d3" -> vitamina d3
 """
 
@@ -169,6 +181,9 @@ Examples:
 - "explain what antihistamines do" -> CONVERSATIONAL
 """
 
+RESPONSE_LANGUAGE_INSTRUCTION = """IMPORTANT: Always respond in the SAME language the user used in their question. 
+If the user writes in English, respond in English. If the user writes in Spanish, respond in Spanish."""
+
 SYMPTOM_TO_SQL_PROMPT = f"""You are an expert pharmacist assistant that generates SQL queries.
 Given a user's health question or symptoms, generate a SQL SELECT query that finds relevant medications 
 from the pharmacy database that could help with those symptoms.
@@ -184,11 +199,12 @@ Rules:
 - Also join with inventory to show actual_stock so we only recommend products in stock (actual_stock > 0).
 - Limit results to 5 most relevant products.
 - Think about what keywords relate to the user's symptoms and search for them.
+- Search using BOTH English and Spanish keywords for symptoms since the database may contain either language.
 
 Examples:
-- "what's good for a headache" -> search for: headache, pain, fever, analgesic
-- "I have a cough" -> search for: cough, cold, flu, respiratory
-- "my skin is itchy" -> search for: itching, rash, dermatitis, skin
+- "what's good for a headache" -> search for: headache, dolor de cabeza, pain, dolor, analgesic, analgésico
+- "I have a cough" -> search for: cough, tos, cold, resfriado, flu, gripe, respiratory, respiratorio
+- "my skin is itchy" -> search for: itching, picazón, rash, erupción, dermatitis, skin, piel
 """
 
 CONVERSATIONAL_PROMPT = """You are a friendly and knowledgeable pharmacy assistant.
@@ -217,20 +233,24 @@ Rules:
 - Format prices nicely (e.g., $25,000 COP or the appropriate format).
 - End by asking if they'd like to place an order for any of the recommended products.
 - If no products were found, still give the medical advice but mention we don't currently have matching products in stock.
-- Respond in the same language the user uses (Spanish or English or any other language).
+- Respond in the same language the user uses (Spanish or English).
 - Be warm and professional, like a pharmacist helping a customer.
 - Always recommend consulting a doctor for serious or persistent symptoms.
 """
 
-MODEL_NAME = "gemini-2.5-flash-lite"
-
 
 def classify_intent(prompt: str) -> str:
-    """Clasifica si la pregunta necesita acceso a la DB o es conversacional."""
-    result = key_manager.generate_with_retry(
-        model=MODEL_NAME,
-        contents=f"{INTENT_CLASSIFICATION_PROMPT}\n\nUser question: {prompt}",
-    )
+    """Classifies whether the question needs DB access or is conversational."""
+    try:
+        result = generate_content(
+            contents=f"User question: {prompt}",
+            system_prompt=INTENT_CLASSIFICATION_PROMPT,
+            temperature=0.0,
+            max_completion_tokens=10,
+        )
+    except Exception as e:
+        print(f"[classify_intent error] {e}")
+        return "DATABASE"
     if result is None:
         return "DATABASE"
     result = result.strip().upper()
@@ -240,29 +260,35 @@ def classify_intent(prompt: str) -> str:
 
 
 def generate_conversational_response(prompt: str) -> str:
-    """Genera una respuesta conversacional sin SQL (fallback si no hay productos)."""
-    result = key_manager.generate_with_retry(
-        model=MODEL_NAME,
-        contents=f"{CONVERSATIONAL_PROMPT}\n\nUser question: {prompt}",
-    )
+    """Generates a conversational response without SQL."""
+    try:
+        result = generate_content(
+            contents=f"User question: {prompt}",
+            system_prompt=CONVERSATIONAL_PROMPT + "\n\n" + RESPONSE_LANGUAGE_INSTRUCTION,
+            temperature=0.7,
+        )
+    except Exception as e:
+        return f"Error generating response: {e}"
     if result is None:
         return "I'm sorry, I couldn't generate a response. Please try again."
     return result.strip()
 
 
 def generate_symptom_sql(prompt: str) -> str:
-    """Genera un SQL para buscar productos relevantes según los síntomas del usuario."""
-    result = key_manager.generate_with_retry(
-        model=MODEL_NAME,
-        contents=f"{SYMPTOM_TO_SQL_PROMPT}\n\nUser question: {prompt}",
+    """Generates a SQL query to find relevant products based on user symptoms."""
+    result = generate_content(
+        contents=f"User question: {prompt}",
+        system_prompt=SYMPTOM_TO_SQL_PROMPT,
+        temperature=0.0,
+        max_completion_tokens=500,
     )
     if result is None:
-        raise ValueError("Gemini no devolvió una respuesta")
+        raise ValueError("OpenAI did not return a response")
     return result.strip()
 
 
 def generate_conversational_with_products(prompt: str, products_data: list[dict]) -> str:
-    """Genera una respuesta conversacional que incluye recomendaciones de productos reales."""
+    """Generates a conversational response that includes real product recommendations."""
     if products_data:
         products_text = "\n".join(
             f"- {p['name']} | Dosage: {p['medication_dosage']} | Form: {p['dosage_form']} | "
@@ -273,24 +299,36 @@ def generate_conversational_with_products(prompt: str, products_data: list[dict]
     else:
         products_text = "No matching products found in our current inventory."
 
-    full_prompt = (
-        f"{CONVERSATIONAL_WITH_PRODUCTS_PROMPT}\n\n"
+    user_message = (
         f"User question: {prompt}\n\n"
         f"Available products in our pharmacy:\n{products_text}"
     )
 
-    result = key_manager.generate_with_retry(model=MODEL_NAME, contents=full_prompt)
+    try:
+        result = generate_content(
+            contents=user_message,
+            system_prompt=CONVERSATIONAL_WITH_PRODUCTS_PROMPT + "\n\n" + RESPONSE_LANGUAGE_INSTRUCTION,
+            temperature=0.7,
+        )
+    except Exception as e:
+        return f"Error generating response: {e}"
     if result is None:
         return "I'm sorry, I couldn't generate a response. Please try again."
     return result.strip()
 
 
 def extract_product_term(prompt: str) -> str | None:
-    """Extrae el término de producto de la pregunta del usuario, o None si no aplica."""
-    result = key_manager.generate_with_retry(
-        model=MODEL_NAME,
-        contents=f"{EXTRACT_PRODUCT_PROMPT}\n\nPregunta del usuario: {prompt}",
-    )
+    """Extracts the product term from the user question, or None if not applicable."""
+    try:
+        result = generate_content(
+            contents=f"User question: {prompt}",
+            system_prompt=EXTRACT_PRODUCT_PROMPT,
+            temperature=0.0,
+            max_completion_tokens=50,
+        )
+    except Exception as e:
+        print(f"[extract_product_term error] {e}")
+        return None
     if result is None:
         return None
     result = result.strip()
@@ -300,26 +338,34 @@ def extract_product_term(prompt: str) -> str | None:
 
 
 def generate_sql(prompt: str, product_name: str | None = None) -> str:
-    """Envía el prompt a Gemini y obtiene una consulta SQL."""
-    context = SYSTEM_PROMPT
+    """Sends the prompt to OpenAI and gets a SQL query."""
+    system = SYSTEM_PROMPT
     if product_name:
-        context += f'\n\nIMPORTANTE: El usuario se refiere al producto exacto: "{product_name}". Usa este nombre exacto en el WHERE.'
+        system += f'\n\nIMPORTANT: The user is referring to the exact product: "{product_name}". Use this exact name in the WHERE clause.'
 
-    result = key_manager.generate_with_retry(
-        model=MODEL_NAME,
-        contents=f"{context}\n\nPregunta del usuario: {prompt}",
+    result = generate_content(
+        contents=f"User question: {prompt}",
+        system_prompt=system,
+        temperature=0.0,
+        max_completion_tokens=500,
     )
     if result is None:
-        raise ValueError("Gemini no devolvió una respuesta")
+        raise ValueError("OpenAI did not return a response")
     return result.strip()
 
 
 def classify_chart_type(prompt: str) -> str:
-    """Clasifica qué tipo de gráfico es apropiado para la pregunta."""
-    result = key_manager.generate_with_retry(
-        model=MODEL_NAME,
-        contents=f"{CHART_CLASSIFICATION_PROMPT}\n\nUser question: {prompt}",
-    )
+    """Classifies what type of chart is appropriate for the question."""
+    try:
+        result = generate_content(
+            contents=f"User question: {prompt}",
+            system_prompt=CHART_CLASSIFICATION_PROMPT,
+            temperature=0.0,
+            max_completion_tokens=10,
+        )
+    except Exception as e:
+        print(f"[classify_chart_type error] {e}")
+        return "NONE"
     if result is None:
         return "NONE"
     result = result.strip().upper()
@@ -329,22 +375,22 @@ def classify_chart_type(prompt: str) -> str:
 
 
 def validate_sql(sql: str) -> tuple[bool, str]:
-    """Valida que el SQL generado sea seguro (solo SELECT).
-    Retorna (is_valid, error_message).
+    """Validates that the generated SQL is safe (SELECT only).
+    Returns (is_valid, error_message).
     """
     cleaned = sql.strip().upper()
 
-    # Remover comentarios de línea
+    # Remove line comments
     lines = [
         line for line in cleaned.split("\n") if not line.strip().startswith("--")
     ]
     cleaned = " ".join(lines)
 
-    # Verificar que empiece con SELECT o WITH (para CTEs)
+    # Verify it starts with SELECT or WITH (for CTEs)
     if not (cleaned.startswith("SELECT") or cleaned.startswith("WITH")):
         return False, "Query must start with SELECT or WITH."
 
-    # Verificar que no contenga operaciones peligrosas
+    # Verify it doesn't contain dangerous operations
     dangerous_keywords = [
         "INSERT ",
         "UPDATE ",

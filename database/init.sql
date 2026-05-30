@@ -86,12 +86,20 @@ CREATE TABLE IF NOT EXISTS order_status_history(
      CONSTRAINT fk_update_orders FOREIGN KEY (orders_update) REFERENCES orders(updated_at)*/
 );
 
+CREATE TABLE IF NOT EXISTS users(
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS conversations(
     id SERIAL PRIMARY KEY,
     title VARCHAR(255) NULL,
-    costumers_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT fk_id_costumers FOREIGN KEY (costumers_id) REFERENCES customers(id)
+    CONSTRAINT fk_conversations_user FOREIGN KEY (user_id) REFERENCES users(id)
 );
 
 CREATE TABLE IF NOT EXISTS messages(
@@ -99,7 +107,7 @@ CREATE TABLE IF NOT EXISTS messages(
     sender VARCHAR(255) NOT NULL,
     conversations_id INTEGER NOT NULL,
     message_content TEXT,
-    images VARCHAR(255),
+    images TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT fk_id_conversation FOREIGN KEY (conversations_id) REFERENCES conversations(id),
     CHECK (

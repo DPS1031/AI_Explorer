@@ -14,12 +14,36 @@ DB_CONFIG = {
 
 
 def get_connection():
-    """Crea y retorna una conexión a PostgreSQL."""
+    """Creates and returns a PostgreSQL connection."""
     return psycopg2.connect(**DB_CONFIG)
 
 
+def run_migrations():
+    """Runs necessary migrations to update the schema."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        # Ensure images column in messages is TEXT (may have been VARCHAR(255))
+        cur.execute("""
+            ALTER TABLE messages ALTER COLUMN images TYPE TEXT;
+        """)
+        conn.commit()
+        cur.close()
+    except Exception:
+        if conn:
+            conn.rollback()
+    finally:
+        if conn:
+            conn.close()
+
+
+# Run migrations on module load
+run_migrations()
+
+
 def execute_query(sql: str) -> tuple[list[str], list[tuple]]:
-    """Ejecuta una consulta SQL SELECT y retorna (columns, rows)."""
+    """Executes a SQL SELECT query and returns (columns, rows)."""
     conn = None
     try:
         conn = get_connection()
@@ -35,16 +59,30 @@ def execute_query(sql: str) -> tuple[list[str], list[tuple]]:
 
 
 def find_matching_products(term: str) -> list[str]:
-    """Busca productos en la DB cuyo nombre coincida parcialmente con el término."""
+    """Searches for products in the DB whose name partially matches the term.
+    Uses a flexible search that handles language variations (e.g. Ibuprofen vs Ibuprofeno).
+    """
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor()
+        # First try exact partial match
         cur.execute(
             "SELECT DISTINCT name FROM products WHERE LOWER(name) LIKE %s ORDER BY name",
             (f"%{term.lower()}%",),
         )
         results = [row[0] for row in cur.fetchall()]
+
+        # If no results, try a more flexible match (first N characters)
+        if not results and len(term) >= 4:
+            # Use the first 4+ characters as a prefix to handle language variations
+            prefix = term.lower()[:max(4, len(term) - 2)]
+            cur.execute(
+                "SELECT DISTINCT name FROM products WHERE LOWER(name) LIKE %s ORDER BY name",
+                (f"%{prefix}%",),
+            )
+            results = [row[0] for row in cur.fetchall()]
+
         cur.close()
         return results
     finally:
