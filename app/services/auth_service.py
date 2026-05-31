@@ -1,5 +1,6 @@
 import hashlib
 import os
+import secrets
 from app.services.db_service import get_connection
 
 
@@ -19,6 +20,31 @@ def verify_password(password: str, stored_hash: str) -> bool:
         return pwd_hash.hex() == hash_hex
     except (ValueError, AttributeError):
         return False
+
+
+def generate_session_token() -> str:
+    """Generates a secure random session token."""
+    return secrets.token_hex(32)
+
+
+def get_user_by_id(user_id: int) -> dict | None:
+    """Gets a user by their ID."""
+    conn = None
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name, email, created_at FROM users WHERE id = %s",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        if not row:
+            return None
+        return {"id": row[0], "name": row[1], "email": row[2], "created_at": row[3]}
+    finally:
+        if conn:
+            conn.close()
 
 
 def register_user(name: str, email: str, password: str) -> dict | None:

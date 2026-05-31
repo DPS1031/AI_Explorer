@@ -1,7 +1,10 @@
 import streamlit as st
+import streamlit.components.v1 as components
+import extra_streamlit_components as stx
 import plotly.express as px
 import pandas as pd
 import uuid
+import base64
 
 from app.services.ai_service import (
     classify_intent,
@@ -12,9 +15,11 @@ from app.services.ai_service import (
     generate_sql,
     classify_chart_type,
     summarize_query_results,
+    analyze_image,
+    generate_image_recommendation,
     validate_sql,
 )
-from app.services.db_service import execute_query, find_matching_products
+from app.services.db_service import execute_query, find_matching_products, get_connection
 from app.services.auth_service import (
     login_user,
     register_user,
@@ -23,6 +28,7 @@ from app.services.auth_service import (
     update_conversation_title,
     save_message,
     get_conversation_messages,
+    get_user_by_id,
 )
 
 # --- Page Config ---
@@ -40,6 +46,15 @@ SUGGESTIONS = [
     "💰 What's the price of Ibuprofen?",
     "📊 Orders by status this month",
 ]
+
+
+def sanitize_response(text: str) -> str:
+    """Sanitizes AI responses to prevent Streamlit rendering issues."""
+    # Remove backticks that cause code highlighting
+    text = text.replace("`", "")
+    # Escape $ signs to prevent Streamlit from interpreting them as LaTeX math delimiters
+    text = text.replace("$", "")
+    return text
 
 
 def inject_custom_css():
@@ -218,9 +233,129 @@ def inject_custom_css():
         div[data-testid="InputInstructions"] {
         visibility: hidden;
         }
+
+        /* --- Attachment button styling (targets by key) --- */
+        .st-key-welcome_attach_btn button,
+        .st-key-chat_attach_btn button {
+            width: 58px !important;
+            height: 58px !important;
+            min-width: 58px !important;
+            min-height: 58px !important;
+            max-width: 58px !important;
+            max-height: 58px !important;
+            padding: 0 !important;
+            font-size: 1.3rem !important;
+            border: 1px solid #3c4043 !important;
+            border-radius: 0.5rem !important;
+            background: transparent !important;
+            line-height: 58px !important;
+            box-sizing: border-box !important;
+        }
+        .st-key-welcome_attach_btn button:hover,
+        .st-key-chat_attach_btn button:hover {
+            background: #3c4043 !important;
+        }
+
+        /* Fix vertical alignment of clip column with text input */
+        .st-key-welcome_attach_btn,
+        .st-key-chat_attach_btn {
+            display: flex !important;
+            align-items: flex-end !important;
+        }
+
+        /* Pin the chat input area to the bottom */
+        .st-key-chat_input_container {
+            position: fixed !important;
+            bottom: 0 !important;
+            /* Default: center a 704px container within the stMain area (viewport minus sidebar) */
+            left: 50% !important;
+            transform: translateX(calc(-50% + 171px)) !important;
+            width: 704px !important;
+            right: auto !important;
+            padding: 1rem 0 1.5rem !important;
+            z-index: 999 !important;
+            background: var(--background-color, #0e1117) !important;
+        }
+        /* Constrain and center the inner content to match chat messages width */
+        .st-key-chat_input_container > div[data-testid="stLayoutWrapper"] {
+            width: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            box-sizing: border-box !important;
+        }
+        /* Add bottom padding to main content so it doesn't hide behind fixed input */
+        section[data-testid="stMain"] .block-container {
+            padding-bottom: 120px !important;
+        }
+
+        /* File uploader in chat: pin above the fixed input */
+        .st-key-chat_uploader_container {
+            position: fixed !important;
+            bottom: 85px !important;
+            left: 50% !important;
+            transform: translateX(calc(-50% + 171px)) !important;
+            width: 704px !important;
+            right: auto !important;
+            padding: 0.5rem 0 !important;
+            z-index: 998 !important;
+            background: var(--background-color, #0e1117) !important;
+        }
+        .st-key-chat_uploader_container > div {
+            width: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            box-sizing: border-box !important;
+        }
         </style>
         """,
         unsafe_allow_html=True,
+    )
+
+    # Inject JS via components.html to dynamically align fixed input with stMain
+    components.html(
+        """
+        <script>
+        function alignFixedInput() {
+            // Use stMainBlockContainer as reference - this is what centers the chat messages
+            const blockContainer = parent.document.querySelector('[data-testid="stMainBlockContainer"]');
+            const container = parent.document.querySelector('.st-key-chat_input_container');
+            const uploader = parent.document.querySelector('.st-key-chat_uploader_container');
+            if (blockContainer && container) {
+                const rect = blockContainer.getBoundingClientRect();
+                // Get computed padding of blockContainer to match exactly
+                const style = parent.window.getComputedStyle(blockContainer);
+                const paddingLeft = parseFloat(style.paddingLeft) || 0;
+                const paddingRight = parseFloat(style.paddingRight) || 0;
+                const contentLeft = rect.left + paddingLeft;
+                const contentWidth = rect.width - paddingLeft - paddingRight;
+                container.style.setProperty('left', contentLeft + 'px', 'important');
+                container.style.setProperty('width', contentWidth + 'px', 'important');
+                container.style.setProperty('right', 'auto', 'important');
+                container.style.setProperty('transform', 'none', 'important');
+            }
+            if (blockContainer && uploader) {
+                const rect = blockContainer.getBoundingClientRect();
+                const style = parent.window.getComputedStyle(blockContainer);
+                const paddingLeft = parseFloat(style.paddingLeft) || 0;
+                const paddingRight = parseFloat(style.paddingRight) || 0;
+                const contentLeft = rect.left + paddingLeft;
+                const contentWidth = rect.width - paddingLeft - paddingRight;
+                uploader.style.setProperty('left', contentLeft + 'px', 'important');
+                uploader.style.setProperty('width', contentWidth + 'px', 'important');
+                uploader.style.setProperty('right', 'auto', 'important');
+            }
+        }
+        // Run immediately and multiple times to minimize flash
+        alignFixedInput();
+        setTimeout(alignFixedInput, 50);
+        setTimeout(alignFixedInput, 150);
+        setTimeout(alignFixedInput, 400);
+        setTimeout(alignFixedInput, 1000);
+        // Observe resize
+        new ResizeObserver(alignFixedInput).observe(parent.document.body);
+        </script>
+        """,
+        height=0,
     )
 
 
@@ -281,6 +416,8 @@ def render_user_avatar_section():
                 st.session_state.chat_started = False
                 st.session_state.current_conversation_id = None
                 st.session_state.show_account_panel = False
+                # Flag cookie to be deleted on next rerun
+                st.session_state._delete_cookie = True
                 st.rerun()
 
         # Account button
@@ -356,6 +493,8 @@ def render_auth_forms():
                         st.session_state.chat_started = False
                         st.session_state.current_conversation_id = None
                         st.session_state.show_auth_forms = False
+                        # Flag cookie to be set on next rerun
+                        st.session_state._set_cookie_user_id = str(user["id"])
                         st.rerun()
                     else:
                         st.error("Invalid email or password.")
@@ -385,6 +524,8 @@ def render_auth_forms():
                         st.session_state.chat_started = False
                         st.session_state.current_conversation_id = None
                         st.session_state.show_auth_forms = False
+                        # Flag cookie to be set on next rerun
+                        st.session_state._set_cookie_user_id = str(user["id"])
                         st.rerun()
                     else:
                         st.error("Email already registered.")
@@ -401,6 +542,12 @@ def load_conversation(conversation_id: int):
             parts = m["image"].split("|||", 1)
             msg["sql"] = parts[0]
             msg["chart_type"] = parts[1] if len(parts) > 1 else "NONE"
+        # If user message has a base64 image, decode it
+        elif m.get("image") and m["role"] == "user":
+            try:
+                msg["image"] = base64.b64decode(m["image"])
+            except Exception:
+                pass
         st.session_state.messages.append(msg)
     st.session_state.current_conversation_id = conversation_id
     st.session_state.chat_started = True
@@ -420,23 +567,59 @@ def render_welcome_screen():
         unsafe_allow_html=True,
     )
 
-    # 1. Centered Input (replaces chat_input on the welcome screen)
-    st.text_input(
-        "Ask me anything about our pharmacy...",
-        placeholder="Ask me anything about our pharmacy...",
-        label_visibility="collapsed",
-        key="welcome_input",
-    )
+    # Image preview (if an image is staged)
+    if st.session_state.get("staged_image"):
+        col_preview, col_remove = st.columns([5, 1])
+        with col_preview:
+            st.image(st.session_state.staged_image, width=150)
+        with col_remove:
+            if st.button("✕", key="remove_welcome_staged_image"):
+                st.session_state.staged_image = None
+                st.rerun()
+
+    # Input row: clip on the left, text input on the right
+    col_clip, col_input = st.columns([1, 12])
+    with col_clip:
+        if st.button("📎", key="welcome_attach_btn", help="Attach a medication image"):
+            st.session_state.show_uploader = not st.session_state.get("show_uploader", False)
+            st.rerun()
+    with col_input:
+        st.text_input(
+            "Ask me anything about our pharmacy...",
+            placeholder="Ask me anything about our pharmacy...",
+            label_visibility="collapsed",
+            key="welcome_input",
+        )
+
+    # File uploader appears only after clicking the clip button
+    if st.session_state.get("show_uploader", False):
+        uploaded = st.file_uploader(
+            "Upload a medication image",
+            type=["jpg", "jpeg", "png", "webp"],
+            key="welcome_file_uploader",
+        )
+        if uploaded is not None and st.session_state.get("staged_image") is None:
+            st.session_state.staged_image = uploaded.getvalue()
+            st.session_state.show_uploader = False
+            st.rerun()
 
     if st.session_state.welcome_input:
-        st.session_state.input_to_process = st.session_state.welcome_input
-        st.session_state.chat_started = True
-        st.rerun()
+        if st.session_state.get("staged_image"):
+            image_bytes = st.session_state.staged_image
+            st.session_state.staged_image = None
+            st.session_state.chat_started = True
+            st.session_state.show_uploader = False
+            handle_image_query(image_bytes, st.session_state.welcome_input)
+            st.rerun()
+        else:
+            st.session_state.input_to_process = st.session_state.welcome_input
+            st.session_state.chat_started = True
+            st.rerun()
 
     # Short spacer
     st.write("")
 
-    # 2. Suggestion buttons below the input
+    # Suggestion buttons below the input
     cols = st.columns(len(SUGGESTIONS))
     for i, suggestion in enumerate(SUGGESTIONS):
         with cols[i]:
@@ -451,6 +634,9 @@ def render_chat_history():
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            # Show image if the user message has one attached
+            if message.get("image") and message["role"] == "user":
+                st.image(message["image"], width=250)
             # If this assistant message has a stored SQL query, re-execute and show results
             if message.get("sql") and message["role"] == "assistant":
                 try:
@@ -510,7 +696,9 @@ def render_chart(df: pd.DataFrame, chart_type: str):
             st.line_chart(chart_df.set_index(label_col)[value_col])
         elif chart_type == "PIE":
             fig = px.pie(chart_df, names=label_col, values=value_col)
-            st.plotly_chart(fig, use_container_width=True, key=f"pie_{uuid.uuid4().hex[:8]}")
+            st.plotly_chart(
+                fig, use_container_width=True, key=f"pie_{uuid.uuid4().hex[:8]}"
+            )
     except Exception:
         # If chart rendering fails, silently skip — the data table is still shown
         pass
@@ -531,9 +719,9 @@ def handle_conversational(prompt: str):
             except Exception:
                 pass
 
-            # Always use the products-aware prompt for consistency
-            # It handles both cases: with products and without
-            response = generate_conversational_with_products(prompt, products_data)
+            # Pass recent conversation history for context
+            history = st.session_state.messages[-4:] if st.session_state.messages else []
+            response = sanitize_response(generate_conversational_with_products(prompt, products_data, history=history))
 
         st.markdown(response)
 
@@ -545,11 +733,158 @@ def handle_conversational(prompt: str):
         save_message(st.session_state.current_conversation_id, "assistant", response)
 
 
+def handle_image_query(image_bytes: bytes, user_text: str):
+    """Handles image-based queries: identifies medication and recommends products."""
+    # If user is logged in, create conversation if it doesn't exist
+    if st.session_state.user and not st.session_state.current_conversation_id:
+        conv_id = create_conversation(st.session_state.user["id"])
+        st.session_state.current_conversation_id = conv_id
+
+    # Save user message with image
+    display_text = user_text if user_text else "📷 [Image uploaded]"
+    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+    st.session_state.messages.append({"role": "user", "content": display_text, "image": image_bytes})
+    if st.session_state.user and st.session_state.current_conversation_id:
+        save_message(st.session_state.current_conversation_id, "user", display_text, image=image_b64)
+
+    with st.chat_message("user"):
+        st.markdown(display_text)
+        st.image(image_bytes, width=250)
+
+    with st.chat_message("assistant"):
+        with st.spinner("Analyzing image..."):
+            # Step 1: Encode image to base64
+            image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+
+            # Step 2: Analyze the image to identify the medication
+            image_analysis = analyze_image(image_base64, user_text)
+
+            if image_analysis is None or image_analysis == "NOT_MEDICATION":
+                response = "I couldn't identify a medication in the image. Please try uploading a clearer photo of the medication packaging, or describe what you need help with."
+                st.markdown(response)
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": response}
+                )
+                if st.session_state.user and st.session_state.current_conversation_id:
+                    save_message(
+                        st.session_state.current_conversation_id, "assistant", response
+                    )
+                return
+
+            # Step 3: Search for matching products in our DB
+            products_data = []
+            try:
+                # Extract a search term from the analysis
+                search_terms = image_analysis.lower().split()
+                # Try the first meaningful word (usually the drug name)
+                for term in search_terms:
+                    if len(term) >= 4 and term not in [
+                        "tablets",
+                        "capsules",
+                        "units",
+                        "by",
+                        "from",
+                        "with",
+                    ]:
+                        matches = find_matching_products(term)
+                        if matches:
+                            # Get full product details
+                            placeholders = ",".join([f"'{m}'" for m in matches])
+                            sql = f"""
+                                SELECT p.name, p.medication_dosage, p.dosage_form, p.laboratory, 
+                                       p.price, i.actual_stock, p.indication_and_symptoms
+                                FROM products p
+                                JOIN inventory i ON i.products_id = p.id
+                                WHERE p.name IN ({placeholders}) AND i.actual_stock > 0
+                            """
+                            columns, rows = execute_query(sql)
+                            if rows:
+                                products_data = [
+                                    dict(zip(columns, row)) for row in rows
+                                ]
+                            break
+            except Exception:
+                pass
+
+            # Step 4: Generate recommendation response
+            response = sanitize_response(generate_image_recommendation(
+                user_text, image_analysis, products_data
+            ))
+
+        st.markdown(response)
+
+    st.session_state.messages.append({"role": "assistant", "content": response})
+    if st.session_state.user and st.session_state.current_conversation_id:
+        save_message(st.session_state.current_conversation_id, "assistant", response)
+
+    # Generate conversation title if first message
+    if (
+        st.session_state.user
+        and st.session_state.current_conversation_id
+        and len(st.session_state.messages) == 2
+    ):
+        title = (user_text[:50] if user_text else "Image analysis") + (
+            "..." if len(user_text) > 50 else ""
+        )
+        update_conversation_title(st.session_state.current_conversation_id, title)
+
+
+def handle_product_not_found(prompt: str, product_term: str):
+    """Handles the case when a product is not found — uses AI to respond in the user's language and suggest alternatives."""
+    from app.services.ai_service import generate_conversational_with_products
+
+    with st.chat_message("assistant"):
+        with st.spinner("Searching for alternatives..."):
+            # Try to find similar products to suggest
+            similar_products = []
+            try:
+                # Search with a very short prefix to find anything related
+                conn = get_connection()
+                cur = conn.cursor()
+                # Get a few products from the same general category
+                prefix = product_term.lower()[:3] if len(product_term) >= 3 else product_term.lower()
+                cur.execute(
+                    """SELECT p.name, p.price, p.medication_dosage, p.dosage_form, p.laboratory, 
+                              p.indication_and_symptoms, i.actual_stock
+                       FROM products p
+                       JOIN inventory i ON i.products_id = p.id
+                       WHERE i.actual_stock > 0
+                       ORDER BY p.name
+                       LIMIT 5""",
+                )
+                columns = [desc[0] for desc in cur.description]
+                rows = cur.fetchall()
+                if rows:
+                    similar_products = [dict(zip(columns, row)) for row in rows]
+                cur.close()
+                conn.close()
+            except Exception:
+                pass
+
+            # Generate a response that explains the product wasn't found and suggests alternatives
+            not_found_prompt = f"{prompt}\n\n[NOTE: The product '{product_term}' was NOT found in our inventory. Inform the user we don't carry this specific product and suggest they check with us for alternatives or similar products.]"
+            history = st.session_state.messages[-4:] if st.session_state.messages else []
+            response = sanitize_response(generate_conversational_with_products(not_found_prompt, [], history=history))
+
+        st.markdown(response)
+
+    st.session_state.messages.append({"role": "assistant", "content": response})
+    if st.session_state.user and st.session_state.current_conversation_id:
+        save_message(st.session_state.current_conversation_id, "assistant", response)
+
+
 def handle_database_query(prompt: str):
     """Handles questions that require a database query."""
     with st.spinner("Analyzing your question..."):
         try:
-            product_term = extract_product_term(prompt)
+            # Include recent history so the AI can resolve references like "it", "the first one"
+            history = st.session_state.messages[-4:] if st.session_state.messages else []
+            history_context = ""
+            if history:
+                history_lines = [f"{'Customer' if m['role'] == 'user' else 'Assistant'}: {m['content'][:150]}" for m in history]
+                history_context = "\n\nRecent conversation:\n" + "\n".join(history_lines)
+
+            product_term = extract_product_term(prompt + history_context)
         except Exception as e:
             st.error(f"Error analyzing your question: {e}")
             return
@@ -557,29 +892,54 @@ def handle_database_query(prompt: str):
     selected_product = None
 
     if product_term:
-        matches = find_matching_products(product_term)
+        # Check if multiple products are mentioned (separated by |)
+        if "|" in product_term:
+            product_terms = [t.strip() for t in product_term.split("|") if t.strip()]
+            all_matched = []
+            not_found = []
+            for term in product_terms:
+                matches = find_matching_products(term)
+                if matches:
+                    all_matched.append(matches[0])
+                else:
+                    not_found.append(term)
 
-        if len(matches) == 0:
-            msg = f"No products found matching '{product_term}'."
-            st.warning(msg)
-            st.session_state.messages.append({"role": "assistant", "content": msg})
-            return
-        elif len(matches) == 1:
-            selected_product = matches[0]
-            st.info(f"Product identified: **{selected_product}**")
-        else:
-            st.info(f"Multiple products found for '{product_term}':")
-            selected_product = st.radio(
-                "Which product would you like to know about?",
-                options=matches,
-                key="product_selection",
-            )
-            if not st.button("Continue", key="btn_continue"):
+            if not_found:
+                for term in not_found:
+                    st.warning(f"No products found matching '{term}'.")
+
+            if not all_matched:
+                # Use AI to respond about not finding products and suggest alternatives
+                handle_product_not_found(prompt, product_term)
                 return
+
+            # Pass all matched products to SQL generation
+            selected_product = ", ".join(all_matched)
+            st.info(f"Products identified: **{selected_product}**")
+        else:
+            matches = find_matching_products(product_term)
+
+            if len(matches) == 0:
+                # Use AI to respond about not finding the product and suggest alternatives
+                handle_product_not_found(prompt, product_term)
+                return
+            elif len(matches) == 1:
+                selected_product = matches[0]
+                st.info(f"Product identified: **{selected_product}**")
+            else:
+                st.info(f"Multiple products found for '{product_term}':")
+                selected_product = st.radio(
+                    "Which product would you like to know about?",
+                    options=matches,
+                    key="product_selection",
+                )
+                if not st.button("Continue", key="btn_continue"):
+                    return
 
     with st.spinner("Generating query..."):
         try:
-            sql = generate_sql(prompt, selected_product)
+            history = st.session_state.messages[-4:] if st.session_state.messages else []
+            sql = generate_sql(prompt, selected_product, history=history)
         except Exception as e:
             st.error(f"Error generating SQL query: {e}")
             return
@@ -614,18 +974,20 @@ def handle_database_query(prompt: str):
             use_container_width=True,
         )
 
-        response_text = summarize_query_results(prompt, columns, rows)
+        response_text = sanitize_response(summarize_query_results(prompt, columns, rows, history=st.session_state.messages[-4:]))
     else:
         if not response_text:
             response_text = "No results found for your query."
             st.info(response_text)
 
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": response_text,
-        "sql": sql if rows else None,
-        "chart_type": chart_type if rows else None,
-    })
+    st.session_state.messages.append(
+        {
+            "role": "assistant",
+            "content": response_text,
+            "sql": sql if rows else None,
+            "chart_type": chart_type if rows else None,
+        }
+    )
     st.session_state.last_results = (
         {"columns": columns, "rows": rows, "chart_type": chart_type} if rows else None
     )
@@ -634,8 +996,10 @@ def handle_database_query(prompt: str):
     if st.session_state.user and st.session_state.current_conversation_id:
         metadata = f"{sql}|||{chart_type}" if rows else None
         save_message(
-            st.session_state.current_conversation_id, "assistant", response_text,
-            image=metadata
+            st.session_state.current_conversation_id,
+            "assistant",
+            response_text,
+            image=metadata,
         )
 
     with st.chat_message("assistant"):
@@ -680,6 +1044,14 @@ def process_user_input(prompt: str):
         update_conversation_title(st.session_state.current_conversation_id, title)
 
 
+def on_chat_input_submit():
+    """Callback for chat text_input. Moves the value to a pending buffer and clears the widget."""
+    value = st.session_state.get("chat_text_input", "")
+    if value:
+        st.session_state.pending_chat_input = value
+        st.session_state.chat_text_input = ""
+
+
 def main():
     # --- Initialize state ---
     if "messages" not in st.session_state:
@@ -706,6 +1078,45 @@ def main():
     if "show_account_panel" not in st.session_state:
         st.session_state.show_account_panel = False
 
+    if "staged_image" not in st.session_state:
+        st.session_state.staged_image = None
+
+    if "pending_chat_input" not in st.session_state:
+        st.session_state.pending_chat_input = None
+
+    # --- Session persistence via cookies ---
+    cookie_manager = stx.CookieManager(key="cookie_manager")
+
+    # Handle pending cookie operations (set from login/register, delete from logout)
+    if st.session_state.get("_set_cookie_user_id"):
+        cookie_manager.set("ai_explorer_user_id", st.session_state._set_cookie_user_id, max_age=30*24*60*60)
+        st.session_state._set_cookie_user_id = None
+
+    _just_logged_out = False
+    if st.session_state.get("_delete_cookie"):
+        try:
+            cookie_manager.delete("ai_explorer_user_id")
+        except (KeyError, Exception):
+            pass
+        st.session_state._delete_cookie = False
+        st.session_state._logout_cycles = 2  # Need 2 cycles for cookie to be fully removed from browser
+        _just_logged_out = True
+
+    if st.session_state.get("_logout_cycles", 0) > 0:
+        _just_logged_out = True
+        st.session_state._logout_cycles -= 1
+
+    if st.session_state.user is None and not _just_logged_out:
+        # Try to restore session from cookie
+        saved_user_id = cookie_manager.get("ai_explorer_user_id")
+        if saved_user_id:
+            try:
+                user = get_user_by_id(int(saved_user_id))
+                if user:
+                    st.session_state.user = user
+            except (ValueError, TypeError):
+                pass
+
     # --- CSS + Sidebar ---
     inject_custom_css()
     render_sidebar()
@@ -720,9 +1131,59 @@ def main():
         # Active chat view (history + previous results)
         render_chat_history()
 
-        # Streamlit's traditional chat_input ONLY appears when chat has started
-        if prompt := st.chat_input("Ask me anything about our pharmacy..."):
+        # File uploader appears pinned above the input area when clip is clicked
+        if st.session_state.get("show_uploader", False):
+            with st.container(key="chat_uploader_container"):
+                uploaded = st.file_uploader(
+                    "Upload a medication image",
+                    type=["jpg", "jpeg", "png", "webp"],
+                    key="chat_file_uploader",
+                )
+                if uploaded is not None and st.session_state.get("staged_image") is None:
+                    st.session_state.staged_image = uploaded.getvalue()
+                    st.session_state.show_uploader = False
+                    st.rerun()
+
+        # Input area pinned to bottom via CSS on the container key
+        with st.container(key="chat_input_container"):
+            # Image preview (if an image is staged)
+            if st.session_state.get("staged_image"):
+                col_preview, col_remove = st.columns([5, 1])
+                with col_preview:
+                    st.image(st.session_state.staged_image, width=150)
+                with col_remove:
+                    if st.button("✕", key="remove_staged_image"):
+                        st.session_state.staged_image = None
+                        st.rerun()
+
+            # Input row: clip on the left, text input on the right
+            col_clip, col_input = st.columns([1, 12])
+            with col_clip:
+                if st.button("📎", key="chat_attach_btn", help="Attach a medication image"):
+                    st.session_state.show_uploader = not st.session_state.get("show_uploader", False)
+                    st.rerun()
+            with col_input:
+                st.text_input(
+                    "Ask me anything about our pharmacy...",
+                    placeholder="Ask me anything about our pharmacy...",
+                    label_visibility="collapsed",
+                    key="chat_text_input",
+                    on_change=on_chat_input_submit,
+                )
+
+    # --- Process inputs captured from chat_text_input via callback ---
+    if st.session_state.get("pending_chat_input"):
+        prompt = st.session_state.pending_chat_input
+        st.session_state.pending_chat_input = None
+        if st.session_state.get("staged_image"):
+            image_bytes = st.session_state.staged_image
+            st.session_state.staged_image = None
+            st.session_state.show_uploader = False
+            handle_image_query(image_bytes, prompt)
+            st.rerun()
+        else:
             process_user_input(prompt)
+            st.rerun()
 
     # --- Process inputs captured from the welcome screen (Suggestions or Central Input) ---
     if st.session_state.input_to_process:

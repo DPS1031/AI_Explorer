@@ -24,7 +24,7 @@ def _get_client() -> OpenAI:
 
 
 def generate_content(
-    contents: str,
+    contents: str | list,
     system_prompt: str | None = None,
     temperature: float = 0.7,
     max_completion_tokens: int | None = None,
@@ -32,7 +32,8 @@ def generate_content(
     """Calls OpenAI chat completion API.
 
     Args:
-        contents: The user message/prompt.
+        contents: The user message/prompt. Can be a string or a list of content parts
+                  (for multimodal messages with images).
         system_prompt: Optional system message for context.
         temperature: Controls randomness (0.0 for deterministic).
         max_completion_tokens: Limit output tokens for short responses.

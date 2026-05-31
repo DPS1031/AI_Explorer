@@ -24,6 +24,8 @@ def run_migrations():
     try:
         conn = get_connection()
         cur = conn.cursor()
+        # Ensure pg_trgm extension is available for fuzzy search
+        cur.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm;")
         # Ensure images column in messages is TEXT (may have been VARCHAR(255))
         cur.execute("""
             ALTER TABLE messages ALTER COLUMN images TYPE TEXT;
@@ -59,24 +61,45 @@ def execute_query(sql: str) -> tuple[list[str], list[tuple]]:
 
 
 def find_matching_products(term: str) -> list[str]:
-    """Searches for products in the DB whose name partially matches the term.
-    Uses a flexible search that handles language variations (e.g. Ibuprofen vs Ibuprofeno).
+    """Searches for products in the DB whose name matches the term.
+    Uses PostgreSQL pg_trgm for fuzzy matching to handle language variations,
+    typos, and alternate spellings (e.g. acetaminofen vs acetaminophen).
     """
     conn = None
     try:
         conn = get_connection()
         cur = conn.cursor()
-        # First try exact partial match
+
+        # First try exact partial match (fastest)
         cur.execute(
             "SELECT DISTINCT name FROM products WHERE LOWER(name) LIKE %s ORDER BY name",
             (f"%{term.lower()}%",),
         )
         results = [row[0] for row in cur.fetchall()]
 
-        # If no results, try a more flexible match (first N characters)
-        if not results and len(term) >= 4:
-            # Use the first 4+ characters as a prefix to handle language variations
-            prefix = term.lower()[:max(4, len(term) - 2)]
+        if results:
+            cur.close()
+            return results
+
+        # If no exact match, use trigram similarity (fuzzy search)
+        # This handles typos and language variations like acetaminofen -> Acetaminophen
+        cur.execute(
+            """SELECT DISTINCT name, similarity(LOWER(name), %s) as sim
+               FROM products
+               WHERE similarity(LOWER(name), %s) > 0.2
+               ORDER BY sim DESC
+               LIMIT 5""",
+            (term.lower(), term.lower()),
+        )
+        results = [row[0] for row in cur.fetchall()]
+
+        if results:
+            cur.close()
+            return results
+
+        # Last resort: try prefix match with first 4 characters
+        if len(term) >= 4:
+            prefix = term.lower()[:4]
             cur.execute(
                 "SELECT DISTINCT name FROM products WHERE LOWER(name) LIKE %s ORDER BY name",
                 (f"%{prefix}%",),

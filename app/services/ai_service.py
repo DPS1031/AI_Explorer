@@ -125,15 +125,28 @@ Important data relationships:
 - To calculate revenue per product, multiply order_items.products_price * order_items.quantity.
 - When asked about "sales" or "sold", always use order_items joined with products.
 - When asked about "stock" or "available", use the inventory table.
+
+Budget/Quote/Cost calculations:
+- When the user asks for a "presupuesto" (budget/quote), "cuánto cuestan" (how much do they cost), or "how much does X cost", calculate: price * quantity.
+- If the user specifies quantities (e.g., "2 cajas de ibuprofeno"), multiply the product price by that quantity.
+- If multiple products are mentioned, show each product's price and calculate the total.
+- Use the products table for prices. ALWAYS include the laboratory column so the user knows which brand.
+- If a product exists from multiple laboratories, show ALL options.
+- Example: SELECT name, laboratory, price, (price * 2) as total FROM products WHERE name ILIKE '%ibuprofen%'
+- When the user asks "do we have X?" or "tenemos X?", include name, price, laboratory, medication_dosage, dosage_form, and actual_stock from inventory.
 """
 
-EXTRACT_PRODUCT_PROMPT = """You are an assistant that analyzes questions about sales in a pharmacy.
-Given the following user question, determine if the question references a specific product.
+EXTRACT_PRODUCT_PROMPT = """You are an assistant that analyzes questions about products in a pharmacy.
+Given the following user question (which may include recent conversation history for context), determine if the question references specific products.
 
-If the question mentions a product (or part of its name), respond ONLY with the exact search term as written by the user, without translating or modifying it.
-If the question does NOT reference a specific product (e.g. "top 5 products", "total sales this month"), respond ONLY with: NONE
-
-IMPORTANT: Do NOT translate the product name. Return it exactly as the user wrote it.
+Rules:
+- If the question mentions ONE product, respond with that product name exactly as written.
+- If the question mentions MULTIPLE products, respond with each product name separated by " | " (pipe with spaces).
+- If the question does NOT reference a specific product (e.g. "top 5 products", "total sales this month"), respond ONLY with: NONE
+- Do NOT translate the product name. Return it exactly as the user wrote it.
+- Do NOT include quantities, just the product names.
+- If the user uses references like "it", "that one", "the first one", look at the conversation history to identify which product they mean and return that product name.
+- If the conversation history mentions products and the user asks about cost/price/stock of "it" or "that", extract the product name from history.
 
 Examples:
 - "What's the price of Ibuprofen?" -> Ibuprofen
@@ -144,6 +157,13 @@ Examples:
 - "total de ventas del último mes" -> NONE
 - "show me top selling products" -> NONE
 - "muéstrame las ventas de vitamina d3" -> vitamina d3
+- "Me puedes dar un presupuesto de 2 cajas de ibuprofeno y una caja de vitamina C" -> ibuprofeno | vitamina C
+- "How much does 3 boxes of amoxicillin and 2 ibuprofen cost?" -> amoxicillin | ibuprofen
+- "Cuanto cuestan 2 cajas de ibuprofeno?" -> ibuprofeno
+- "Give me a quote for acetaminophen and loratadine" -> acetaminophen | loratadine
+- "Tenemos acetaminofen?" -> acetaminofen
+- "And how much does it cost?" (history mentions Acetaminophen) -> Acetaminophen
+- "How much does the first one cost?" (history shows top 5: Cetirizine, Loratadine...) -> Cetirizine
 """
 
 CHART_CLASSIFICATION_PROMPT = """You are a data visualization expert for a pharmacy system.
@@ -199,8 +219,13 @@ Examples:
 - "explain what antihistamines do" -> CONVERSATIONAL
 """
 
-RESPONSE_LANGUAGE_INSTRUCTION = """IMPORTANT: Always respond in the SAME language the user used in their question. 
-If the user writes in English, respond in English. If the user writes in Spanish, respond in Spanish."""
+RESPONSE_LANGUAGE_INSTRUCTION = """CRITICAL LANGUAGE RULE: You MUST respond in the EXACT SAME language as the CURRENT user question (the last question asked, NOT the conversation history).
+If the current question is in English, you MUST respond entirely in English regardless of what language previous messages were in.
+If the current question is in Spanish, you MUST respond entirely in Spanish.
+Do NOT let the conversation history influence your response language. ONLY the current question determines the language.
+ALL prices are in Colombian Pesos (COP). Always use the word COP after the amount. Example: 25,000 COP.
+Do NOT use $ symbol before prices (it causes rendering issues). Just write the number followed by COP.
+Do NOT use any markdown or special formatting: no **bold**, no *italic*, no backticks, no code blocks, no special characters. Write in plain text only."""
 
 SYMPTOM_TO_SQL_PROMPT = f"""You are an expert pharmacist assistant that generates SQL queries.
 Given a user's health question or symptoms, generate a SQL SELECT query that finds relevant medications 
@@ -213,16 +238,30 @@ Rules:
 - Generate ONLY a SELECT query, no explanations, no markdown, no backticks.
 - Search in the products table using the indication_and_symptoms column and the name/description columns.
 - Use ILIKE with % wildcards for flexible matching.
-- Include product name, description, price, medication_dosage, dosage_form, laboratory, and indication_and_symptoms.
-- Also join with inventory to show actual_stock so we only recommend products in stock (actual_stock > 0).
+- Include product name, description, price, medication_dosage, dosage_form, laboratory, indication_and_symptoms, and actual_stock from inventory.
+- ALWAYS join with inventory to show actual_stock so we only recommend products in stock (actual_stock > 0).
+- The SELECT must include these exact column names: name, price, medication_dosage, dosage_form, laboratory, indication_and_symptoms, actual_stock
 - Limit results to 5 most relevant products.
-- Think about what keywords relate to the user's symptoms and search for them.
+- Think broadly about what medications help with the user's symptoms.
 - Search using BOTH English and Spanish keywords for symptoms since the database may contain either language.
+- Think about the CATEGORY of medication that treats the symptom, not just the symptom keyword.
 
-Examples:
-- "what's good for a headache" -> search for: headache, dolor de cabeza, pain, dolor, analgesic, analgésico
-- "I have a cough" -> search for: cough, tos, cold, resfriado, flu, gripe, respiratory, respiratorio
-- "my skin is itchy" -> search for: itching, picazón, rash, erupción, dermatitis, skin, piel
+Common mappings (use multiple keywords):
+- headache/dolor de cabeza → analgesic, pain, dolor, headache, fever, fiebre
+- cough/tos → cough, tos, cold, resfriado, flu, gripe, respiratory, respiratorio, expectorant
+- back pain/dolor de espalda → pain, dolor, inflammation, inflamación, muscle, muscular, analgesic, analgésico, anti-inflammatory
+- allergies/alergias → allergy, alergia, antihistamine, antihistamínico, rhinitis, rinitis, itching, picazón
+- fever/fiebre → fever, fiebre, antipyretic, antipirético, pain, dolor
+- infection/infección → antibiotic, antibiótico, infection, infección
+- skin/piel → dermatitis, skin, piel, rash, cream, crema, topical, tópico
+
+Example query structure:
+SELECT p.name, p.price, p.medication_dosage, p.dosage_form, p.laboratory, p.indication_and_symptoms, i.actual_stock
+FROM products p
+JOIN inventory i ON i.products_id = p.id
+WHERE i.actual_stock > 0
+AND (p.indication_and_symptoms ILIKE '%keyword1%' OR p.indication_and_symptoms ILIKE '%keyword2%' OR p.name ILIKE '%keyword3%' OR p.description ILIKE '%keyword4%')
+LIMIT 5
 """
 
 CONVERSATIONAL_PROMPT = """You are a friendly and knowledgeable pharmacy assistant.
@@ -247,9 +286,14 @@ Rules:
 - Keep it brief (2-4 sentences max) unless the data is complex.
 - Do NOT mention SQL, queries, databases, or technical details.
 - Do NOT use markdown tables — the data will be shown separately in a chart/table.
+- Do NOT use markdown formatting like **bold**, *italic*, or any special characters for emphasis.
+- Write in plain text only. No asterisks, no underscores, no special formatting.
 - Be warm and helpful, like a pharmacist explaining information to a customer.
 - If the data has rankings or comparisons, highlight the top items.
 - If the data shows trends, mention the direction.
+- When showing prices or quotes, ALWAYS mention the laboratory/brand if available in the data.
+- If there are multiple options from different laboratories, mention all of them so the customer can choose.
+- ALL prices are in Colombian Pesos (COP). Write prices as the number followed by COP. Example: 25,000 COP. Do NOT use the $ symbol.
 """
 
 CONVERSATIONAL_WITH_PRODUCTS_PROMPT = """You are a friendly and knowledgeable pharmacy assistant.
@@ -257,18 +301,110 @@ You help customers with general pharmaceutical questions and recommend products 
 
 The user asked a health-related question. Below you have:
 1. The user's question
-2. Products available in our pharmacy that may help (if any were found)
+2. Recent conversation history (if available) for context
+3. Products available in our pharmacy that may help (if any were found)
 
 Rules:
 - First, provide a brief medical explanation about the condition/symptoms (2-3 sentences max).
 - Then, if products were found, recommend them with their details (name, dosage, form, price, laboratory).
-- Format prices nicely (e.g., $25,000 COP or the appropriate format).
+- ALL prices are in Colombian Pesos (COP). Write prices as the number followed by COP. Example: 25,000 COP. Do NOT use the $ symbol.
+- Do NOT use markdown formatting like **bold**, *italic*, or special characters. Write in plain text only.
+- Do NOT use the $ symbol anywhere in your response.
 - If products were found, end by asking if they'd like to place an order for any of the recommended products.
-- If no products were found, still give the medical advice and mention that we don't currently have matching products in stock, but suggest they visit the pharmacy for more options.
+- If no products were found BUT the conversation history mentions relevant products, refer back to those products from the history. Do NOT say "we don't have products" if you already recommended something relevant in a previous message.
+- If no products were found and nothing relevant is in the history, give medical advice and mention that we don't currently have matching products in stock, but suggest they visit the pharmacy for more options.
 - Be warm and professional, like a pharmacist helping a customer.
 - Always recommend consulting a doctor for serious or persistent symptoms.
 - ALWAYS try to be helpful and provide actionable advice regardless of whether products were found.
+- Use the conversation history to understand context (e.g., if the user says "it" or "that one", refer to the previous messages to understand what they mean).
 """
+
+
+IMAGE_ANALYSIS_PROMPT = """You are a pharmaceutical image recognition assistant.
+Analyze the provided image of a medication (box, bottle, blister pack, sachet, etc.) and extract the following information:
+
+Rules:
+- Identify the medication name, dosage, form (tablet, capsule, syrup, sachet, etc.), and laboratory/brand if visible.
+- Respond ONLY with a short structured summary like: "Ibuprofen 400mg tablets by Bayer, 20 units"
+- If you can partially identify the medication (e.g., you can see it's Vitamin C but can't read the dosage), still provide what you can identify.
+- Look for text on packaging, brand logos, and product descriptions visible in the image.
+- If the image shows ANY pharmaceutical or health product (vitamins, supplements, OTC medications), identify it — do NOT respond with NOT_MEDICATION.
+- Only respond with NOT_MEDICATION if the image clearly shows something completely unrelated to health/pharmacy (e.g., food, electronics, animals).
+"""
+
+IMAGE_RECOMMENDATION_PROMPT = """You are a friendly and knowledgeable pharmacy assistant.
+A customer has shared an image of a medication. You have analyzed the image and identified the product.
+Below you have:
+1. What was identified in the image
+2. The user's message/question about it
+3. Matching products available in our pharmacy
+
+Rules:
+- Start by confirming what you identified in the image (e.g., "I can see you have a box of Ibuprofen 400mg...").
+- If we have matching or similar products in our pharmacy, recommend them with details (name, dosage, form, price, laboratory).
+- If the user seems to need a refill or is asking about the medication, provide helpful information.
+- ALL prices are in Colombian Pesos (COP). Write prices as the number followed by COP. Example: 25,000 COP. Do NOT use the $ symbol.
+- Do NOT use markdown formatting like **bold**, *italic*, or special characters. Write in plain text only.
+- Do NOT use the $ symbol anywhere in your response.
+- Be warm and professional, like a pharmacist helping a customer.
+- If no matching products were found, acknowledge the medication and suggest they check back or ask about alternatives.
+- Always recommend consulting a doctor if they have concerns about their medication.
+"""
+
+
+def analyze_image(image_base64: str, user_text: str = "") -> str:
+    """Analyzes a medication image and returns the identified product."""
+    content_parts = [
+        {"type": "text", "text": f"User message: {user_text}" if user_text else "Identify this medication."},
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+        },
+    ]
+
+    try:
+        result = generate_content(
+            contents=content_parts,
+            system_prompt=IMAGE_ANALYSIS_PROMPT,
+            temperature=0.0,
+            max_completion_tokens=100,
+        )
+    except Exception as e:
+        print(f"[analyze_image error] {e}")
+        return None
+    if result is None:
+        return None
+    return result.strip()
+
+
+def generate_image_recommendation(user_text: str, image_analysis: str, products_data: list[dict]) -> str:
+    """Generates a response combining image analysis with product recommendations."""
+    if products_data:
+        products_text = "\n".join(
+            f"- {p['name']} | Dosage: {p.get('medication_dosage', 'N/A')} | Form: {p.get('dosage_form', 'N/A')} | "
+            f"Lab: {p.get('laboratory', 'N/A')} | Price: ${p.get('price', 'N/A')} | Stock: {p.get('actual_stock', 'N/A')} units"
+            for p in products_data
+        )
+    else:
+        products_text = "No matching products found in our current inventory."
+
+    user_message = (
+        f"Image analysis result: {image_analysis}\n\n"
+        f"User message (RESPOND IN THIS LANGUAGE): {user_text}\n\n"
+        f"Available matching products in our pharmacy:\n{products_text}"
+    )
+
+    try:
+        result = generate_content(
+            contents=user_message,
+            system_prompt=IMAGE_RECOMMENDATION_PROMPT + "\n\n" + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\nThe user's message is: \"{user_text}\". Detect the language of THIS message and respond ENTIRELY in that language.",
+            temperature=0.7,
+        )
+    except Exception as e:
+        return f"I identified the medication as: {image_analysis}. However, I encountered an error generating recommendations."
+    if result is None:
+        return f"I identified the medication as: {image_analysis}. Please try again for product recommendations."
+    return result.strip()
 
 
 def classify_intent(prompt: str) -> str:
@@ -319,20 +455,30 @@ def generate_symptom_sql(prompt: str) -> str:
     return result.strip()
 
 
-def generate_conversational_with_products(prompt: str, products_data: list[dict]) -> str:
+def generate_conversational_with_products(prompt: str, products_data: list[dict], history: list[dict] | None = None) -> str:
     """Generates a conversational response that includes real product recommendations."""
     if products_data:
         products_text = "\n".join(
-            f"- {p['name']} | Dosage: {p['medication_dosage']} | Form: {p['dosage_form']} | "
-            f"Lab: {p['laboratory']} | Price: ${p['price']} | Stock: {p['actual_stock']} units | "
-            f"Indications: {p['indication_and_symptoms']}"
+            f"- {p.get('name', 'N/A')} | Dosage: {p.get('medication_dosage', 'N/A')} | Form: {p.get('dosage_form', 'N/A')} | "
+            f"Lab: {p.get('laboratory', 'N/A')} | Price: {p.get('price', 'N/A')} COP | Stock: {p.get('actual_stock', 'N/A')} units | "
+            f"Indications: {p.get('indication_and_symptoms', 'N/A')}"
             for p in products_data
         )
     else:
         products_text = "No matching products found in our current inventory."
 
+    # Build conversation context from history
+    history_text = ""
+    if history:
+        history_lines = []
+        for msg in history[-4:]:  # Last 4 messages for context
+            role = "Customer" if msg["role"] == "user" else "Assistant"
+            history_lines.append(f"{role}: {msg['content'][:200]}")
+        history_text = "Recent conversation:\n" + "\n".join(history_lines) + "\n\n"
+
     user_message = (
-        f"User question: {prompt}\n\n"
+        f"{history_text}"
+        f"Current user question (RESPOND IN THE LANGUAGE OF THIS QUESTION): {prompt}\n\n"
         f"Available products in our pharmacy:\n{products_text}"
     )
 
@@ -350,13 +496,15 @@ def generate_conversational_with_products(prompt: str, products_data: list[dict]
 
 
 def extract_product_term(prompt: str) -> str | None:
-    """Extracts the product term from the user question, or None if not applicable."""
+    """Extracts the product term(s) from the user question, or None if not applicable.
+    Returns a single product name, or multiple separated by ' | '.
+    """
     try:
         result = generate_content(
             contents=f"User question: {prompt}",
             system_prompt=EXTRACT_PRODUCT_PROMPT,
             temperature=0.0,
-            max_completion_tokens=50,
+            max_completion_tokens=100,
         )
     except Exception as e:
         print(f"[extract_product_term error] {e}")
@@ -369,14 +517,33 @@ def extract_product_term(prompt: str) -> str | None:
     return result
 
 
-def generate_sql(prompt: str, product_name: str | None = None) -> str:
+
+
+def generate_sql(prompt: str, product_name: str | None = None, history: list[dict] | None = None) -> str:
     """Sends the prompt to OpenAI and gets a SQL query."""
     system = SYSTEM_PROMPT
     if product_name:
-        system += f'\n\nIMPORTANT: The user is referring to the exact product: "{product_name}". Use this exact name in the WHERE clause.'
+        if "," in product_name:
+            # Multiple products
+            products = [p.strip() for p in product_name.split(",")]
+            products_list = ", ".join(f'"{p}"' for p in products)
+            system += f'\n\nIMPORTANT: The user is referring to these products: {products_list}. Use these exact names in the WHERE clause with IN or multiple ILIKE conditions. Include ALL of them in the query results.'
+        else:
+            system += f'\n\nIMPORTANT: The user is referring to the exact product: "{product_name}". Use this exact name in the WHERE clause.'
+
+    # Add conversation context so the AI can resolve references like "the first one", "it", etc.
+    context_text = ""
+    if history:
+        history_lines = []
+        for msg in history[-4:]:
+            role = "Customer" if msg["role"] == "user" else "Assistant"
+            history_lines.append(f"{role}: {msg['content'][:200]}")
+        context_text = "\n\nRecent conversation for context (use this to resolve references like 'it', 'the first one', 'that product'):\n" + "\n".join(history_lines)
+
+    user_content = f"User question: {prompt}{context_text}"
 
     result = generate_content(
-        contents=f"User question: {prompt}",
+        contents=user_content,
         system_prompt=system,
         temperature=0.0,
         max_completion_tokens=500,
@@ -406,7 +573,7 @@ def classify_chart_type(prompt: str) -> str:
     return result
 
 
-def summarize_query_results(prompt: str, columns: list[str], rows: list[tuple]) -> str:
+def summarize_query_results(prompt: str, columns: list[str], rows: list[tuple], history: list[dict] | None = None) -> str:
     """Generates a natural language summary of the query results."""
     # Format the data as a readable table for the AI
     if not rows:
@@ -418,7 +585,17 @@ def summarize_query_results(prompt: str, columns: list[str], rows: list[tuple]) 
     if len(rows) > 20:
         data_text += f"  ... and {len(rows) - 20} more rows.\n"
 
+    # Build conversation context from history
+    history_text = ""
+    if history:
+        history_lines = []
+        for msg in history[-4:]:
+            role = "Customer" if msg["role"] == "user" else "Assistant"
+            history_lines.append(f"{role}: {msg['content'][:200]}")
+        history_text = "Recent conversation:\n" + "\n".join(history_lines) + "\n\n"
+
     user_message = (
+        f"{history_text}"
         f"User question: {prompt}\n\n"
         f"Query results ({len(rows)} row(s)):\n{data_text}"
     )
