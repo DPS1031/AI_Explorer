@@ -78,17 +78,78 @@ def find_matching_products(term: str) -> list[str]:
         results = [row[0] for row in cur.fetchall()]
 
         if results:
+            # If the search term has multiple words (e.g., "Vitamina C"), filter results
+            # to only include products that match ALL words, not just any word.
+            # This prevents "Vitamina C" from matching "Vitamina D3".
+            if " " in term.strip():
+                words = term.lower().split()
+                filtered = [
+                    r for r in results
+                    if all(w in r.lower() for w in words)
+                ]
+                if filtered:
+                    cur.close()
+                    return filtered
             cur.close()
             return results
+
+        # If no exact match, try each word individually for partial match
+        # This handles cross-language cases like "vitamina C" matching "Vitamin C"
+        words = term.lower().split()
+        if len(words) > 1:
+            # Find products that match ALL significant words (length >= 2)
+            # For "vitamina C" -> search products containing both something like "vitamin" AND "c" as a word
+            significant_words = sorted([w for w in words if len(w) >= 2], key=len, reverse=True)
+            short_words = [w for w in words if len(w) == 1]  # Single character words like "c"
+            
+            if significant_words:
+                # Search by the longest word first (most specific)
+                primary_word = significant_words[0]
+                # Use trigram for the primary word to handle language variations
+                cur.execute(
+                    """SELECT DISTINCT name, similarity(LOWER(name), %s) as sim
+                       FROM products
+                       WHERE similarity(LOWER(name), %s) > 0.3
+                       ORDER BY sim DESC
+                       LIMIT 10""",
+                    (primary_word, primary_word),
+                )
+                candidates = [row[0] for row in cur.fetchall()]
+                
+                if candidates:
+                    # Filter candidates by other significant words AND short words
+                    filtered = []
+                    for candidate in candidates:
+                        candidate_lower = candidate.lower()
+                        # Check significant words (len >= 2) as substrings
+                        sig_match = all(w in candidate_lower for w in significant_words[1:])
+                        # Check short words (len == 1) as whole words (surrounded by spaces or at boundaries)
+                        short_match = True
+                        for sw in short_words:
+                            # Check if the single char appears as a separate word in the name
+                            candidate_words = candidate_lower.split()
+                            if sw not in candidate_words:
+                                short_match = False
+                                break
+                        if sig_match and short_match:
+                            filtered.append(candidate)
+                    if filtered:
+                        cur.close()
+                        return filtered
+                
+                # If filtering removed everything but we have candidates, return best match only
+                if candidates:
+                    cur.close()
+                    return candidates[:1]
 
         # If no exact match, use trigram similarity (fuzzy search)
         # This handles typos and language variations like acetaminofen -> Acetaminophen
         cur.execute(
             """SELECT DISTINCT name, similarity(LOWER(name), %s) as sim
                FROM products
-               WHERE similarity(LOWER(name), %s) > 0.2
+               WHERE similarity(LOWER(name), %s) > 0.3
                ORDER BY sim DESC
-               LIMIT 5""",
+               LIMIT 3""",
             (term.lower(), term.lower()),
         )
         results = [row[0] for row in cur.fetchall()]

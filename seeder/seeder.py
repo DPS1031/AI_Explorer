@@ -125,6 +125,14 @@ def seed_products(conn, category_map, supplier_ids):
                 "indication_and_symptoms": "Headache and fever.",
             },
             {
+                "name": "Acetaminophen",
+                "description": "Analgesic and antipyretic drug.",
+                "medication_dosage": "200mg",
+                "dosage_form": "Tablet",
+                "laboratory": "Bayer",
+                "indication_and_symptoms": "Headache and fever.",
+            },
+            {
                 "name": "Ibuprofen",
                 "description": "Nonsteroidal anti-inflammatory drug (NSAID).",
                 "medication_dosage": "400mg",
@@ -146,6 +154,14 @@ def seed_products(conn, category_map, supplier_ids):
                 "medication_dosage": "50mg",
                 "dosage_form": "Capsule",
                 "laboratory": "Grünenthal",
+                "indication_and_symptoms": "Moderate to severe pain.",
+            },
+            {
+                "name": "Tramadol",
+                "description": "Opioid pain medication.",
+                "medication_dosage": "70mg",
+                "dosage_form": "Bottle",
+                "laboratory": "Novartis",
                 "indication_and_symptoms": "Moderate to severe pain.",
             },
             {

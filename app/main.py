@@ -18,7 +18,20 @@ from app.services.ai_service import (
     analyze_image,
     generate_image_recommendation,
     validate_sql,
+    classify_order_intent,
+    extract_order_product,
+    extract_multi_order_products,
+    generate_data_collection_message,
+    parse_customer_data,
+    generate_data_confirmation_message,
+    classify_data_confirmation,
+    generate_product_options_message,
+    generate_multi_order_summary,
+    parse_product_selection,
+    parse_multi_order_selection,
 )
+from app.services.pdf_service import generate_invoice_pdf
+from app.services.email_service import send_invoice_email
 from app.services.db_service import execute_query, find_matching_products, get_connection
 from app.services.auth_service import (
     login_user,
@@ -234,6 +247,32 @@ def inject_custom_css():
         visibility: hidden;
         }
 
+        /* Hide the form submit button — Enter key submits the form */
+        .st-key-chat_input_container [data-testid="stFormSubmitButton"],
+        .st-key-chat_input_container .stFormSubmitButton,
+        .st-key-welcome_form [data-testid="stFormSubmitButton"],
+        .st-key-welcome_form .stFormSubmitButton,
+        [data-testid="stForm"] [data-testid="stFormSubmitButton"] {
+            display: none !important;
+            height: 0 !important;
+            overflow: hidden !important;
+            margin: 0 !important;
+            padding: 0 !important;
+        }
+        /* Also hide the container wrapping the submit button */
+        .st-key-FormSubmitter-chat_form-Send,
+        .st-key-FormSubmitter-welcome_form-Send {
+            display: none !important;
+            height: 0 !important;
+        }
+        /* Remove form padding/border */
+        .st-key-chat_input_container [data-testid="stForm"],
+        .st-key-welcome_form [data-testid="stForm"],
+        .stForm {
+            border: none !important;
+            padding: 0 !important;
+        }
+
         /* --- Attachment button styling (targets by key) --- */
         .st-key-welcome_attach_btn button,
         .st-key-chat_attach_btn button {
@@ -291,12 +330,12 @@ def inject_custom_css():
         /* File uploader in chat: pin above the fixed input */
         .st-key-chat_uploader_container {
             position: fixed !important;
-            bottom: 85px !important;
+            bottom: 90px !important;
             left: 50% !important;
             transform: translateX(calc(-50% + 171px)) !important;
             width: 704px !important;
             right: auto !important;
-            padding: 0.5rem 0 !important;
+            padding: 0.5rem 1rem !important;
             z-index: 998 !important;
             background: var(--background-color, #0e1117) !important;
         }
@@ -584,12 +623,14 @@ def render_welcome_screen():
             st.session_state.show_uploader = not st.session_state.get("show_uploader", False)
             st.rerun()
     with col_input:
-        st.text_input(
-            "Ask me anything about our pharmacy...",
-            placeholder="Ask me anything about our pharmacy...",
-            label_visibility="collapsed",
-            key="welcome_input",
-        )
+        with st.form(key="welcome_form", clear_on_submit=True, border=False):
+            st.text_input(
+                "Ask me anything about our pharmacy...",
+                placeholder="Ask me anything about our pharmacy...",
+                label_visibility="collapsed",
+                key="welcome_input",
+            )
+            welcome_submitted = st.form_submit_button("Send", type="primary")
 
     # File uploader appears only after clicking the clip button
     if st.session_state.get("show_uploader", False):
@@ -603,7 +644,7 @@ def render_welcome_screen():
             st.session_state.show_uploader = False
             st.rerun()
 
-    if st.session_state.welcome_input:
+    if welcome_submitted and st.session_state.welcome_input:
         if st.session_state.get("staged_image"):
             image_bytes = st.session_state.staged_image
             st.session_state.staged_image = None
@@ -637,6 +678,15 @@ def render_chat_history():
             # Show image if the user message has one attached
             if message.get("image") and message["role"] == "user":
                 st.image(message["image"], width=250)
+            # Show PDF download button if this message has a generated invoice
+            if message.get("pdf_bytes") and message["role"] == "assistant":
+                st.download_button(
+                    label="📄 Descargar Factura PDF",
+                    data=message["pdf_bytes"],
+                    file_name=message.get("pdf_filename", "factura.pdf"),
+                    mime="application/pdf",
+                    key=f"download_pdf_{uuid.uuid4().hex[:8]}",
+                )
             # If this assistant message has a stored SQL query, re-execute and show results
             if message.get("sql") and message["role"] == "assistant":
                 try:
@@ -720,7 +770,7 @@ def handle_conversational(prompt: str):
                 pass
 
             # Pass recent conversation history for context
-            history = st.session_state.messages[-4:] if st.session_state.messages else []
+            history = st.session_state.messages[-6:] if st.session_state.messages else []
             response = sanitize_response(generate_conversational_with_products(prompt, products_data, history=history))
 
         st.markdown(response)
@@ -1021,6 +1071,40 @@ def process_user_input(prompt: str):
     with st.chat_message("user"):
         st.markdown(prompt)
 
+    # --- ORDER FLOW: Check if we're in an active order process ---
+    if st.session_state.order_flow == "awaiting_product_selection":
+        handle_order_product_selection(prompt)
+        return
+
+    if st.session_state.order_flow == "awaiting_data":
+        handle_order_data_received(prompt)
+        return
+
+    if st.session_state.order_flow == "awaiting_confirmation":
+        handle_order_data_confirmation(prompt)
+        return
+
+    if st.session_state.order_flow == "multi_awaiting_selection":
+        handle_multi_order_selection(prompt)
+        return
+
+    if st.session_state.order_flow == "multi_awaiting_data":
+        handle_multi_order_data_received(prompt)
+        return
+
+    if st.session_state.order_flow == "multi_awaiting_confirmation":
+        handle_multi_order_data_confirmation(prompt)
+        return
+
+    # --- Check if user is confirming an order ---
+    history = st.session_state.messages[-8:] if st.session_state.messages else []
+    order_intent = classify_order_intent(prompt, history=history)
+
+    if order_intent == "ORDER_CONFIRMED":
+        handle_order_confirmed(prompt)
+        return
+
+    # --- Normal flow ---
     with st.spinner("Understanding your question..."):
         try:
             intent = classify_intent(prompt)
@@ -1044,12 +1128,1189 @@ def process_user_input(prompt: str):
         update_conversation_title(st.session_state.current_conversation_id, title)
 
 
+def _detect_conversation_language() -> str:
+    """Detects the language of the current conversation segment based on recent user messages.
+    Returns 'es', 'en', or 'fr'.
+    Prioritizes the most recent user messages heavily, since the user may switch languages mid-conversation.
+    """
+    user_messages = [m["content"] for m in st.session_state.messages if m["role"] == "user"]
+    if not user_messages:
+        return "es"
+
+    # English indicators
+    en_words = ["i want", "yes", "please", "thank", "order", "how much", "what", "the", "my", "can i", "i'd like", "correct", "they're", "i wan"]
+    # French indicators
+    fr_words = ["je veux", "je voudrais", "je souhaite", "je prefere", "s'il vous", "merci", "combien", "bonjour", "oui", "commande", "ici mon", "va oui"]
+    # Spanish indicators
+    es_words = ["quiero", "por favor", "gracias", "cuanto", "dame", "ordenar", "necesito", "hola", "buenos dias", "opciones", "si"]
+
+    # Only look at the last 4 user messages, with exponentially more weight to recent ones
+    messages_to_check = user_messages[-4:]
+    
+    en_score = 0.0
+    fr_score = 0.0
+    es_score = 0.0
+
+    for i, msg in enumerate(messages_to_check):
+        msg_lower = msg.lower()
+        
+        # Skip messages that are purely data (contain @, lots of numbers, commas separating data)
+        # These are customer data entries and don't indicate language
+        if "@" in msg and "," in msg and any(c.isdigit() for c in msg):
+            continue
+        
+        # Skip very short messages (< 8 chars) as they're usually confirmations
+        if len(msg) < 8:
+            continue
+
+        # More recent messages get exponentially more weight
+        # Last message = weight 8, second to last = 4, third = 2, fourth = 1
+        recency_weight = 2 ** (i)
+
+        en_count = sum(1 for w in en_words if w in msg_lower)
+        fr_count = sum(1 for w in fr_words if w in msg_lower)
+        es_count = sum(1 for w in es_words if w in msg_lower)
+
+        en_score += en_count * recency_weight
+        fr_score += fr_count * recency_weight
+        es_score += es_count * recency_weight
+
+    if en_score > fr_score and en_score > es_score:
+        return "en"
+    elif fr_score > en_score and fr_score > es_score:
+        return "fr"
+    return "es"
+
+
+def handle_order_confirmed(prompt: str):
+    """Handles when the user confirms they want to order a product.
+    Shows all available presentations/options before asking for personal data.
+    """
+    # Build history that excludes previous completed orders.
+    # Find the last "order completed" marker in messages and only use messages after it.
+    all_messages = st.session_state.messages if st.session_state.messages else []
+    
+    # Find the index of the last order completion message
+    last_order_complete_idx = -1
+    order_complete_markers = ["factura ha sido generada", "invoice has been generated", "facture a été générée", "pdf", "descargar factura", "download invoice", "telecharger facture"]
+    for i, msg in enumerate(all_messages):
+        if msg["role"] == "assistant":
+            content_lower = msg["content"].lower()
+            if any(marker in content_lower for marker in order_complete_markers):
+                last_order_complete_idx = i
+    
+    # Use only messages after the last completed order, limited to 4
+    if last_order_complete_idx >= 0:
+        relevant_messages = all_messages[last_order_complete_idx + 1:]
+    else:
+        relevant_messages = all_messages
+    
+    history = relevant_messages[-4:] if relevant_messages else []
+
+    with st.spinner("Processing your order..."):
+        # First, check if this is a multi-product order
+        multi_products = extract_multi_order_products(prompt, history=history)
+        
+        if multi_products and len(multi_products) > 1:
+            # This is a multi-product order — route to multi-order flow
+            handle_multi_order_confirmed(prompt, multi_products)
+            return
+
+        # Single product order — extract which product and quantity
+        order_info = extract_order_product(prompt, history=history)
+
+    if not order_info:
+        # Couldn't determine the product, ask for clarification in user's language
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        try:
+            fallback = generate_content(
+                contents=(
+                    f"The customer wants to order something but we couldn't identify which product. "
+                    f"Their message was: \"{prompt}\"\n"
+                    f"Ask them to specify the product name and quantity they want to order.\n"
+                    f"Respond in the same language as the customer's message."
+                ),
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION,
+                temperature=0.7,
+            )
+            response = sanitize_response(fallback.strip()) if fallback else sanitize_response(
+                "I couldn't identify which product you'd like to order. "
+                "Could you please tell me the product name and quantity?"
+            )
+        except Exception:
+            response = sanitize_response(
+                "I couldn't identify which product you'd like to order. "
+                "Could you please tell me the product name and quantity?"
+            )
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    # Find ALL matching products in the database (all presentations, labs, dosages)
+    product_name = order_info["product"]
+    matches = find_matching_products(product_name)
+
+    if not matches:
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        try:
+            fallback = generate_content(
+                contents=(
+                    f"The customer wants to order '{product_name}' but it was NOT found in our inventory. "
+                    f"Their message was: \"{prompt}\"\n"
+                    f"Inform them we don't have this product and ask if they'd like to try another product.\n"
+                    f"Respond in the same language as the customer's message."
+                ),
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION,
+                temperature=0.7,
+            )
+            response = sanitize_response(fallback.strip()) if fallback else sanitize_response(
+                f"I couldn't find '{product_name}' in our inventory. "
+                "Could you verify the name or ask about another product?"
+            )
+        except Exception:
+            response = sanitize_response(
+                f"I couldn't find '{product_name}' in our inventory. "
+                "Could you verify the name or ask about another product?"
+            )
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    # Get ALL product details from DB (all presentations)
+    try:
+        conn = get_connection()
+        cur = conn.cursor()
+        placeholders = ",".join(["%s"] * len(matches))
+        cur.execute(
+            f"""SELECT p.name, p.price, p.medication_dosage, p.dosage_form, 
+                       p.laboratory, i.actual_stock
+                FROM products p
+                JOIN inventory i ON i.products_id = p.id
+                WHERE p.name IN ({placeholders}) AND i.actual_stock > 0
+                ORDER BY p.name, p.laboratory""",
+            matches,
+        )
+        columns = [desc[0] for desc in cur.description]
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        products_data = [dict(zip(columns, row)) for row in rows]
+    except Exception:
+        products_data = []
+
+    # If the user specified a laboratory preference, filter to only that lab
+    preferred_lab = order_info.get("laboratory")
+    if preferred_lab and products_data:
+        filtered_by_lab = [
+            p for p in products_data
+            if preferred_lab.lower() in p.get("laboratory", "").lower()
+        ]
+        if filtered_by_lab:
+            products_data = filtered_by_lab
+
+    if not products_data:
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        try:
+            fallback = generate_content(
+                contents=(
+                    f"The customer wants to order '{product_name}' but it's currently out of stock. "
+                    f"Their message was: \"{prompt}\"\n"
+                    f"Inform them the product has no available stock and ask if they'd like another product.\n"
+                    f"Respond in the same language as the customer's message."
+                ),
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION,
+                temperature=0.7,
+            )
+            response = sanitize_response(fallback.strip()) if fallback else sanitize_response(
+                f"'{product_name}' is currently out of stock. Would you like to ask about another product?"
+            )
+        except Exception:
+            response = sanitize_response(
+                f"'{product_name}' is currently out of stock. Would you like to ask about another product?"
+            )
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    # If user already specified a laboratory and there's exactly 1 match, skip option selection
+    # and go directly to data collection
+    if preferred_lab and len(products_data) == 1:
+        selected = products_data[0]
+        quantity = order_info.get("quantity", 1)
+        st.session_state.order_product = {
+            "product": selected["name"],
+            "quantity": quantity,
+            "price": float(selected["price"]),
+        }
+        st.session_state.order_flow = "awaiting_data"
+
+        language = _detect_conversation_language()
+        response = sanitize_response(
+            generate_data_collection_message(selected["name"], quantity, prompt, history=history, language=language)
+        )
+
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    # Show all options (even if only one) so the customer sees price before providing data
+    st.session_state.order_product_options = products_data
+    st.session_state.order_flow = "awaiting_product_selection"
+
+    language = _detect_conversation_language()
+    response = sanitize_response(
+        generate_product_options_message(products_data, prompt, history=history, language=language)
+    )
+
+    with st.chat_message("assistant"):
+        st.markdown(response)
+    st.session_state.messages.append({"role": "assistant", "content": response})
+    if st.session_state.user and st.session_state.current_conversation_id:
+        save_message(st.session_state.current_conversation_id, "assistant", response)
+
+
+def handle_order_product_selection(prompt: str):
+    """Handles when the user selects a product from the presented options."""
+    history = st.session_state.messages[-6:] if st.session_state.messages else []
+
+    with st.spinner("Processing your selection..."):
+        selection = parse_product_selection(prompt, history=history)
+
+    options = st.session_state.order_product_options
+
+    if not selection or not options:
+        # Check if the user is asking to see the options again
+        options_request_indicators = ["que opciones", "what options", "cuales", "which", "show me", "muestrame", "opciones hay", "quelles options", "les options"]
+        is_asking_options = any(indicator in prompt.lower() for indicator in options_request_indicators)
+
+        if is_asking_options and options:
+            # Re-show the product options
+            history_for_lang = st.session_state.messages[-6:] if st.session_state.messages else []
+            language = _detect_conversation_language()
+            response = sanitize_response(
+                generate_product_options_message(options, prompt, history=history_for_lang, language=language)
+            )
+            with st.chat_message("assistant"):
+                st.markdown(response)
+            st.session_state.messages.append({"role": "assistant", "content": response})
+            if st.session_state.user and st.session_state.current_conversation_id:
+                save_message(st.session_state.current_conversation_id, "assistant", response)
+            return
+
+        # Check if the user wants to cancel the order
+        cancel_indicators = ["cancelar", "cancel", "no quiero", "nevermind", "no thanks", "no gracias"]
+        is_cancel = any(indicator in prompt.lower() for indicator in cancel_indicators)
+
+        if is_cancel:
+            # Exit order flow and process as a normal query
+            st.session_state.order_flow = None
+            st.session_state.order_product_options = None
+            with st.spinner("Understanding your question..."):
+                try:
+                    intent = classify_intent(prompt)
+                except Exception as e:
+                    st.error(f"Error classifying your question: {e}")
+                    return
+
+            if intent == "CONVERSATIONAL":
+                handle_conversational(prompt)
+            else:
+                handle_database_query(prompt)
+            return
+
+        # Not a cancel and not asking for options — just couldn't parse the selection. Ask again in user's language.
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        try:
+            fallback_response = generate_content(
+                contents=(
+                    f"The customer said: \"{prompt}\"\n"
+                    f"We need them to select from the product options previously shown. "
+                    f"Ask them politely to indicate which option number they want "
+                    f"(e.g., 'option 1' or 'I want the Genfar one').\n"
+                    f"Respond in the same language as the customer's message."
+                ),
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION,
+                temperature=0.7,
+            )
+            if fallback_response:
+                response = sanitize_response(fallback_response.strip())
+            else:
+                response = sanitize_response(
+                    "Could you please indicate which option you'd like? "
+                    "You can say the option number (e.g., 'option 1') or mention the laboratory name."
+                )
+        except Exception:
+            response = sanitize_response(
+                "Could you please indicate which option you'd like? "
+                "You can say the option number (e.g., 'option 1') or mention the laboratory name."
+            )
+
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    idx = selection["selection"] - 1  # Convert to 0-based
+    quantity = selection["quantity"]
+
+    if idx < 0 or idx >= len(options):
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        try:
+            fallback_response = generate_content(
+                contents=(
+                    f"The customer selected option number {selection['selection']}, but we only have {len(options)} options. "
+                    f"Ask them to choose a valid number between 1 and {len(options)}.\n"
+                    f"Customer's message was: \"{prompt}\"\n"
+                    f"Respond in the same language as the customer's message."
+                ),
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION,
+                temperature=0.7,
+            )
+            if fallback_response:
+                response = sanitize_response(fallback_response.strip())
+            else:
+                response = sanitize_response(
+                    f"The selected option is not valid. Please choose a number between 1 and {len(options)}."
+                )
+        except Exception:
+            response = sanitize_response(
+                f"The selected option is not valid. Please choose a number between 1 and {len(options)}."
+            )
+
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    selected = options[idx]
+
+    # Store selected product and move to data collection
+    st.session_state.order_product = {
+        "product": selected["name"],
+        "quantity": quantity,
+        "price": float(selected["price"]),
+    }
+    st.session_state.order_product_options = None
+    st.session_state.order_flow = "awaiting_data"
+
+    # Ask for customer data
+    language = _detect_conversation_language()
+    response = sanitize_response(
+        generate_data_collection_message(selected["name"], quantity, prompt, history=history, language=language)
+    )
+
+    with st.chat_message("assistant"):
+        st.markdown(response)
+    st.session_state.messages.append({"role": "assistant", "content": response})
+    if st.session_state.user and st.session_state.current_conversation_id:
+        save_message(st.session_state.current_conversation_id, "assistant", response)
+
+
+def handle_order_data_received(prompt: str):
+    """Handles when the user provides their personal data for the order."""
+    # Check if the user wants to cancel the order
+    cancel_indicators = ["ya no", "no gracias", "cancelar", "cancel", "no quiero", "nevermind", "no thanks", "dejalo", "olvidalo", "forget it"]
+    if any(indicator in prompt.lower() for indicator in cancel_indicators):
+        # User wants to cancel — exit order flow
+        st.session_state.order_flow = None
+        st.session_state.order_product = None
+        st.session_state.order_product_options = None
+
+        language = _detect_conversation_language()
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        lang_instruction = {"en": "You MUST respond ENTIRELY in English.", "fr": "You MUST respond ENTIRELY in French.", "es": "You MUST respond ENTIRELY in Spanish."}.get(language, "You MUST respond ENTIRELY in Spanish.")
+        try:
+            msg = generate_content(
+                contents=f"The customer wants to cancel their order. Their message: \"{prompt}\". Acknowledge the cancellation politely and let them know they can order again anytime.\nLANGUAGE INSTRUCTION: {lang_instruction}",
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
+                temperature=0.7,
+            )
+            response = sanitize_response(msg.strip()) if msg else "Order cancelled. Let me know if you need anything else."
+        except Exception:
+            response = "Order cancelled. Let me know if you need anything else."
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    with st.spinner("Processing your information..."):
+        customer_data = parse_customer_data(prompt)
+
+    if not customer_data:
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        try:
+            fallback = generate_content(
+                contents=(
+                    f"The customer tried to provide their personal data but we couldn't parse it. "
+                    f"Their message was: \"{prompt}\"\n"
+                    f"Ask them to send the data again in this format: "
+                    f"Name, Document type, Document number, Email, Address, City, Phone.\n"
+                    f"Respond in the same language as the customer's message."
+                ),
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION,
+                temperature=0.7,
+            )
+            response = sanitize_response(fallback.strip()) if fallback else sanitize_response(
+                "I couldn't process your data. Please send it again in this format:\n\n"
+                "Name, Document type, Document number, Email, Address, City, Phone"
+            )
+        except Exception:
+            response = sanitize_response(
+                "I couldn't process your data. Please send it again in this format:\n\n"
+                "Name, Document type, Document number, Email, Address, City, Phone"
+            )
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    # Check for missing fields
+    missing = customer_data.get("_missing", [])
+    if missing:
+        missing_labels = {
+            "nombre": "Full name / Nombre completo",
+            "cedula": "Document number / Numero de documento",
+            "correo": "Email / Correo electronico",
+            "direccion": "Address / Direccion",
+            "ciudad": "City / Ciudad",
+            "celular": "Phone / Celular",
+        }
+        missing_text = ", ".join(missing_labels.get(f, f) for f in missing)
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        try:
+            fallback = generate_content(
+                contents=(
+                    f"The customer provided their data but some fields are missing: {missing_text}. "
+                    f"Their message was: \"{prompt}\"\n"
+                    f"Ask them to provide the missing fields.\n"
+                    f"Respond in the same language as the customer's message."
+                ),
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION,
+                temperature=0.7,
+            )
+            response = sanitize_response(fallback.strip()) if fallback else sanitize_response(
+                f"Some data is missing: {missing_text}. Please provide these to continue."
+            )
+        except Exception:
+            response = sanitize_response(
+                f"Some data is missing: {missing_text}. Please provide these to continue."
+            )
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    # All data collected - store and ask for confirmation
+    customer_data.pop("_missing", None)
+    st.session_state.order_customer_data = customer_data
+    st.session_state.order_flow = "awaiting_confirmation"
+
+    order_product = st.session_state.order_product
+    history = st.session_state.messages[-8:] if st.session_state.messages else []
+    language = _detect_conversation_language()
+    response = sanitize_response(
+        generate_data_confirmation_message(
+            customer_data,
+            order_product["product"],
+            order_product["quantity"],
+            order_product["price"],
+            prompt,
+            history=history,
+            language=language,
+        )
+    )
+
+    with st.chat_message("assistant"):
+        st.markdown(response)
+    st.session_state.messages.append({"role": "assistant", "content": response})
+    if st.session_state.user and st.session_state.current_conversation_id:
+        save_message(st.session_state.current_conversation_id, "assistant", response)
+
+
+def handle_order_data_confirmation(prompt: str):
+    """Handles when the user confirms or denies their data is correct."""
+    confirmation = classify_data_confirmation(prompt)
+
+    if confirmation == "DATA_NOT_CONFIRMED":
+        # Reset to awaiting_data so they can provide corrected info
+        st.session_state.order_flow = "awaiting_data"
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        try:
+            fallback = generate_content(
+                contents=(
+                    f"The customer said their data is NOT correct. Their message: \"{prompt}\"\n"
+                    f"Ask them to send all their corrected data again (name, document type, document number, email, address, city, phone).\n"
+                    f"Respond in the same language as the customer's message."
+                ),
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION,
+                temperature=0.7,
+            )
+            response = sanitize_response(fallback.strip()) if fallback else sanitize_response(
+                "Understood. Please send me all your corrected data again:\n\n"
+                "1. Full name\n2. Document type (CC, CE, Passport)\n3. Document number\n"
+                "4. Email\n5. Full address\n6. City\n7. Phone number"
+            )
+        except Exception:
+            response = sanitize_response(
+                "Understood. Please send me all your corrected data again:\n\n"
+                "1. Full name\n2. Document type (CC, CE, Passport)\n3. Document number\n"
+                "4. Email\n5. Full address\n6. City\n7. Phone number"
+            )
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    # DATA_CONFIRMED - Generate the PDF
+    order_product = st.session_state.order_product
+    customer_data = st.session_state.order_customer_data
+
+    # Detect language from the conversation for the PDF
+    language = _detect_conversation_language()
+
+    with st.spinner("Generating your invoice..."):
+        products_for_pdf = [
+            {
+                "nombre": order_product["product"],
+                "cantidad": order_product["quantity"],
+                "precio_unitario": order_product["price"],
+                "subtotal": order_product["price"] * order_product["quantity"],
+            }
+        ]
+
+        pdf_bytes = generate_invoice_pdf(
+            customer_data=customer_data,
+            products=products_for_pdf,
+            language=language,
+        )
+
+    # Send invoice via email using AWS SES
+    total = order_product["price"] * order_product["quantity"]
+    email_result = send_invoice_email(
+        recipient_email=customer_data.get("correo", ""),
+        customer_name=customer_data.get("nombre", "Customer"),
+        pdf_bytes=pdf_bytes,
+        pdf_filename=f"factura_{customer_data.get('cedula', 'order')}.pdf",
+        order_summary={
+            "product": order_product["product"],
+            "quantity": order_product["quantity"],
+            "total": total,
+        },
+        language=language,
+    )
+
+    if email_result["success"]:
+        print(f"[order_flow] Invoice email sent to {customer_data.get('correo')}")
+    else:
+        print(f"[order_flow] Failed to send email: {email_result.get('error')}")
+
+    # Generate success message in user's language
+    from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+
+    # Use deterministic language detection
+    lang_instruction = {
+        "en": "You MUST respond ENTIRELY in English.",
+        "fr": "You MUST respond ENTIRELY in French.",
+        "es": "You MUST respond ENTIRELY in Spanish.",
+    }.get(language, "You MUST respond ENTIRELY in Spanish.")
+
+    try:
+        success_msg = generate_content(
+            contents=(
+                f"The customer's invoice has been generated successfully.\n"
+                f"Order summary:\n"
+                f"- Product: {order_product['product']}\n"
+                f"- Quantity: {order_product['quantity']}\n"
+                f"- Total: {total:,.2f} COP\n"
+                f"- Email: {customer_data.get('correo', 'N/A')}\n\n"
+                f"Tell them their invoice is ready, show the summary, mention they can download it with the button below, "
+                f"and that a copy will be sent to their email.\n"
+                f"LANGUAGE INSTRUCTION: {lang_instruction}"
+            ),
+            system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
+            temperature=0.7,
+        )
+        response = sanitize_response(success_msg.strip()) if success_msg else sanitize_response(
+            f"Your invoice has been generated successfully.\n\n"
+            f"Order summary:\n"
+            f"Product: {order_product['product']}\n"
+            f"Quantity: {order_product['quantity']}\n"
+            f"Total: {total:,.2f} COP\n\n"
+            f"You can download your invoice with the button below. "
+            f"A copy will also be sent to: {customer_data.get('correo', 'N/A')}"
+        )
+    except Exception:
+        response = sanitize_response(
+            f"Your invoice has been generated successfully.\n\n"
+            f"Order summary:\n"
+            f"Product: {order_product['product']}\n"
+            f"Quantity: {order_product['quantity']}\n"
+            f"Total: {total:,.2f} COP\n\n"
+            f"You can download your invoice with the button below. "
+            f"A copy will also be sent to: {customer_data.get('correo', 'N/A')}"
+        )
+
+    with st.chat_message("assistant"):
+        st.markdown(response)
+        st.download_button(
+            label="📄 Download Invoice PDF" if language == "en" else ("📄 Telecharger Facture PDF" if language == "fr" else "📄 Descargar Factura PDF"),
+            data=pdf_bytes,
+            file_name=f"factura_{customer_data.get('cedula', 'order')}.pdf",
+            mime="application/pdf",
+            key=f"download_invoice_{uuid.uuid4().hex[:8]}",
+        )
+
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": response,
+        "pdf_bytes": pdf_bytes,
+        "pdf_filename": f"factura_{customer_data.get('cedula', 'order')}.pdf",
+    })
+    if st.session_state.user and st.session_state.current_conversation_id:
+        save_message(st.session_state.current_conversation_id, "assistant", response)
+
+    # Reset order flow state
+    st.session_state.order_flow = None
+    st.session_state.order_product = None
+    st.session_state.order_customer_data = None
+    st.session_state.order_product_options = None
+
+
+# ============================================================
+# MULTI-PRODUCT ORDER FLOW
+# ============================================================
+
+def handle_multi_order_confirmed(prompt: str, multi_products: list[dict]):
+    """Handles a multi-product order request. Searches all products, shows summary with budget."""
+    language = _detect_conversation_language()
+
+    products_found = []  # Products with exactly 1 match (confirmed)
+    products_not_found = []  # Product names not found in DB
+    products_with_options = []  # Products with multiple presentations needing selection
+
+    for item in multi_products:
+        product_name = item["product"]
+        quantity = item.get("quantity", 1)
+        preferred_lab = item.get("laboratory")
+
+        matches = find_matching_products(product_name)
+
+        if not matches:
+            products_not_found.append(product_name)
+            continue
+
+        # Get product details from DB
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            placeholders = ",".join(["%s"] * len(matches))
+            cur.execute(
+                f"""SELECT p.name, p.price, p.medication_dosage, p.dosage_form, 
+                           p.laboratory, i.actual_stock
+                    FROM products p
+                    JOIN inventory i ON i.products_id = p.id
+                    WHERE p.name IN ({placeholders}) AND i.actual_stock > 0
+                    ORDER BY p.name, p.laboratory""",
+                matches,
+            )
+            columns = [desc[0] for desc in cur.description]
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+            product_options = [dict(zip(columns, row)) for row in rows]
+        except Exception:
+            product_options = []
+
+        if not product_options:
+            products_not_found.append(product_name)
+            continue
+
+        # Filter by preferred lab if specified
+        if preferred_lab:
+            filtered = [p for p in product_options if preferred_lab.lower() in p.get("laboratory", "").lower()]
+            if filtered:
+                product_options = filtered
+
+        if len(product_options) == 1:
+            # Exactly 1 option — confirmed
+            p = product_options[0]
+            p["quantity"] = quantity
+            products_found.append(p)
+        else:
+            # Multiple options — need user selection
+            products_with_options.append({
+                "search_term": product_name,
+                "quantity": quantity,
+                "options": product_options,
+            })
+
+    # Store state
+    st.session_state.multi_order_products = products_found
+    st.session_state.multi_order_pending_options = products_with_options
+
+    if products_with_options:
+        # Need user to select options for some products
+        st.session_state.order_flow = "multi_awaiting_selection"
+    else:
+        # All products confirmed — go to data collection
+        st.session_state.order_flow = "multi_awaiting_data"
+
+    # Generate summary message
+    response = sanitize_response(
+        generate_multi_order_summary(products_found, products_not_found, products_with_options, prompt, language=language)
+    )
+
+    with st.chat_message("assistant"):
+        st.markdown(response)
+    st.session_state.messages.append({"role": "assistant", "content": response})
+    if st.session_state.user and st.session_state.current_conversation_id:
+        save_message(st.session_state.current_conversation_id, "assistant", response)
+
+
+def handle_multi_order_selection(prompt: str):
+    """Handles when the user selects options for products with multiple presentations in a multi-order."""
+    # Check if the user wants to cancel
+    cancel_indicators = ["ya no", "no gracias", "cancelar", "cancel", "no quiero", "nevermind", "no thanks", "dejalo", "olvidalo", "forget it"]
+    if any(indicator in prompt.lower() for indicator in cancel_indicators):
+        st.session_state.order_flow = None
+        st.session_state.multi_order_products = None
+        st.session_state.multi_order_pending_options = None
+        language = _detect_conversation_language()
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        lang_instruction = {"en": "You MUST respond ENTIRELY in English.", "fr": "You MUST respond ENTIRELY in French.", "es": "You MUST respond ENTIRELY in Spanish."}.get(language, "You MUST respond ENTIRELY in Spanish.")
+        try:
+            msg = generate_content(
+                contents=f"The customer wants to cancel their order. Acknowledge politely.\nLANGUAGE INSTRUCTION: {lang_instruction}",
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
+                temperature=0.7,
+            )
+            response = sanitize_response(msg.strip()) if msg else "Order cancelled. Let me know if you need anything else."
+        except Exception:
+            response = "Order cancelled. Let me know if you need anything else."
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    history = st.session_state.messages[-6:] if st.session_state.messages else []
+    pending = st.session_state.multi_order_pending_options
+
+    if not pending:
+        # No pending selections, move to data collection
+        st.session_state.order_flow = "multi_awaiting_data"
+        language = _detect_conversation_language()
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        lang_instruction = {"en": "You MUST respond ENTIRELY in English.", "fr": "You MUST respond ENTIRELY in French.", "es": "You MUST respond ENTIRELY in Spanish."}.get(language, "You MUST respond ENTIRELY in Spanish.")
+        try:
+            msg = generate_content(
+                contents=f"All products are confirmed. Ask the customer for their personal data to generate the invoice.\nLANGUAGE INSTRUCTION: {lang_instruction}",
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
+                temperature=0.7,
+            )
+            response = sanitize_response(msg.strip()) if msg else "All products confirmed. Please provide your personal data."
+        except Exception:
+            response = "All products confirmed. Please provide your personal data."
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    # Parse user's selections
+    with st.spinner("Processing your selections..."):
+        selections = parse_multi_order_selection(prompt, history=history)
+
+    # Fallback: if model couldn't parse but user mentions a lab name that matches pending options,
+    # try to resolve directly
+    if not selections and pending:
+        prompt_lower = prompt.lower()
+        fallback_selections = []
+        for item in pending:
+            for i, opt in enumerate(item["options"]):
+                lab = opt.get("laboratory", "").lower()
+                if lab and lab in prompt_lower:
+                    fallback_selections.append({
+                        "product": item["search_term"].lower(),
+                        "selection": i + 1,
+                        "quantity": item["quantity"],
+                    })
+        if fallback_selections:
+            selections = fallback_selections
+
+    if not selections:
+        # Couldn't parse — ask again
+        language = _detect_conversation_language()
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        lang_instruction = {"en": "You MUST respond ENTIRELY in English.", "fr": "You MUST respond ENTIRELY in French.", "es": "You MUST respond ENTIRELY in Spanish."}.get(language, "You MUST respond ENTIRELY in Spanish.")
+        try:
+            msg = generate_content(
+                contents=f"The customer needs to select options for products with multiple presentations. Ask them to specify which option they want for each product (by number or laboratory name).\nCustomer said: \"{prompt}\"\nLANGUAGE INSTRUCTION: {lang_instruction}",
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
+                temperature=0.7,
+            )
+            response = sanitize_response(msg.strip()) if msg else "Could you please specify which option you'd like for each product?"
+        except Exception:
+            response = "Could you please specify which option you'd like for each product?"
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    # Apply selections — now supports multiple selections per product
+    confirmed = st.session_state.multi_order_products or []
+    still_pending = []
+
+    for item in pending:
+        search_lower = item["search_term"].lower().strip()
+        # Find all selections that match this pending product
+        # Use fuzzy matching: check if the selection product name contains or is contained by the search term
+        matching_selections = []
+        for s in selections:
+            s_product = s["product"].lower().strip()
+            # Match if: exact match, one contains the other, or they share a significant prefix (>= 4 chars)
+            if (s_product == search_lower 
+                or s_product in search_lower 
+                or search_lower in s_product
+                or (len(search_lower) >= 4 and len(s_product) >= 4 and 
+                    (s_product[:4] == search_lower[:4]))):
+                matching_selections.append(s)
+
+        if matching_selections:
+            for sel in matching_selections:
+                idx = sel["selection"] - 1
+                qty = sel.get("quantity", item["quantity"])
+                if 0 <= idx < len(item["options"]):
+                    chosen = dict(item["options"][idx])  # Copy to avoid mutation
+                    chosen["quantity"] = qty
+                    confirmed.append(chosen)
+            # Product resolved — don't add to still_pending
+        else:
+            # No selection found for this product
+            still_pending.append(item)
+
+    st.session_state.multi_order_products = confirmed
+    st.session_state.multi_order_pending_options = still_pending
+
+    if still_pending:
+        # Still have pending selections — show remaining options
+        language = _detect_conversation_language()
+        response = sanitize_response(
+            generate_multi_order_summary(confirmed, [], still_pending, prompt, language=language)
+        )
+    else:
+        # All confirmed — ask for data
+        st.session_state.order_flow = "multi_awaiting_data"
+        language = _detect_conversation_language()
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        lang_instruction = {"en": "You MUST respond ENTIRELY in English.", "fr": "You MUST respond ENTIRELY in French.", "es": "You MUST respond ENTIRELY in Spanish."}.get(language, "You MUST respond ENTIRELY in Spanish.")
+
+        # Build order summary for the data request
+        total = sum(float(p["price"]) * p["quantity"] for p in confirmed)
+        products_summary = "\n".join(f"- {p['name']} ({p.get('laboratory', '')}) x{p['quantity']} = {float(p['price']) * p['quantity']:,.2f} COP" for p in confirmed)
+
+        try:
+            msg = generate_content(
+                contents=(
+                    f"All products are confirmed for the order:\n{products_summary}\n"
+                    f"Grand Total: {total:,.2f} COP\n\n"
+                    f"Now ask the customer for their personal data to generate the invoice "
+                    f"(full name, document type, document number, email, address, city, phone).\n"
+                    f"LANGUAGE INSTRUCTION: {lang_instruction}"
+                ),
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
+                temperature=0.7,
+            )
+            response = sanitize_response(msg.strip()) if msg else "All products confirmed. Please provide your personal data."
+        except Exception:
+            response = f"Order confirmed. Total: {total:,.2f} COP. Please provide your personal data."
+
+    with st.chat_message("assistant"):
+        st.markdown(response)
+    st.session_state.messages.append({"role": "assistant", "content": response})
+    if st.session_state.user and st.session_state.current_conversation_id:
+        save_message(st.session_state.current_conversation_id, "assistant", response)
+
+
+def handle_multi_order_data_received(prompt: str):
+    """Handles when the user provides their personal data for a multi-product order."""
+    # Check if the user wants to cancel the order
+    cancel_indicators = ["ya no", "no gracias", "cancelar", "cancel", "no quiero", "nevermind", "no thanks", "dejalo", "olvidalo", "forget it"]
+    if any(indicator in prompt.lower() for indicator in cancel_indicators):
+        # User wants to cancel — exit multi-order flow
+        st.session_state.order_flow = None
+        st.session_state.multi_order_products = None
+        st.session_state.multi_order_pending_options = None
+        st.session_state.order_customer_data = None
+
+        language = _detect_conversation_language()
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        lang_instruction = {"en": "You MUST respond ENTIRELY in English.", "fr": "You MUST respond ENTIRELY in French.", "es": "You MUST respond ENTIRELY in Spanish."}.get(language, "You MUST respond ENTIRELY in Spanish.")
+        try:
+            msg = generate_content(
+                contents=f"The customer wants to cancel their order. Their message: \"{prompt}\". Acknowledge the cancellation politely and let them know they can order again anytime.\nLANGUAGE INSTRUCTION: {lang_instruction}",
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
+                temperature=0.7,
+            )
+            response = sanitize_response(msg.strip()) if msg else "Order cancelled. Let me know if you need anything else."
+        except Exception:
+            response = "Order cancelled. Let me know if you need anything else."
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    with st.spinner("Processing your information..."):
+        customer_data = parse_customer_data(prompt)
+
+    if not customer_data:
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        language = _detect_conversation_language()
+        lang_instruction = {"en": "You MUST respond ENTIRELY in English.", "fr": "You MUST respond ENTIRELY in French.", "es": "You MUST respond ENTIRELY in Spanish."}.get(language, "You MUST respond ENTIRELY in Spanish.")
+        try:
+            fallback = generate_content(
+                contents=f"The customer tried to provide their personal data but we couldn't parse it. Ask them to send it again in format: Name, Document type, Document number, Email, Address, City, Phone.\nLANGUAGE INSTRUCTION: {lang_instruction}",
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
+                temperature=0.7,
+            )
+            response = sanitize_response(fallback.strip()) if fallback else "I couldn't process your data. Please send it again."
+        except Exception:
+            response = "I couldn't process your data. Please send it again in format: Name, Document type, Document number, Email, Address, City, Phone."
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    # Check for missing fields
+    missing = customer_data.get("_missing", [])
+    if missing:
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        language = _detect_conversation_language()
+        lang_instruction = {"en": "You MUST respond ENTIRELY in English.", "fr": "You MUST respond ENTIRELY in French.", "es": "You MUST respond ENTIRELY in Spanish."}.get(language, "You MUST respond ENTIRELY in Spanish.")
+        missing_text = ", ".join(missing)
+        try:
+            fallback = generate_content(
+                contents=f"Some fields are missing: {missing_text}. Ask the customer to provide them.\nLANGUAGE INSTRUCTION: {lang_instruction}",
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
+                temperature=0.7,
+            )
+            response = sanitize_response(fallback.strip()) if fallback else f"Missing data: {missing_text}. Please provide these."
+        except Exception:
+            response = f"Missing data: {missing_text}. Please provide these to continue."
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    # All data collected — show confirmation
+    customer_data.pop("_missing", None)
+    st.session_state.order_customer_data = customer_data
+    st.session_state.order_flow = "multi_awaiting_confirmation"
+
+    # Build confirmation message with all products
+    products = st.session_state.multi_order_products
+    total = sum(float(p["price"]) * p["quantity"] for p in products)
+    language = _detect_conversation_language()
+
+    from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+    lang_instruction = {"en": "You MUST respond ENTIRELY in English.", "fr": "You MUST respond ENTIRELY in French.", "es": "You MUST respond ENTIRELY in Spanish."}.get(language, "You MUST respond ENTIRELY in Spanish.")
+
+    products_summary = "\n".join(
+        f"- {p['name']} ({p.get('laboratory', 'N/A')}) x{p['quantity']} - Unit: {float(p['price']):,.2f} COP - Subtotal: {float(p['price']) * p['quantity']:,.2f} COP"
+        for p in products
+    )
+
+    try:
+        msg = generate_content(
+            contents=(
+                f"Customer data:\n"
+                f"- Name: {customer_data.get('nombre', 'N/A')}\n"
+                f"- Document: {customer_data.get('tipo_documento', 'N/A')} {customer_data.get('cedula', 'N/A')}\n"
+                f"- Email: {customer_data.get('correo', 'N/A')}\n"
+                f"- Address: {customer_data.get('direccion', 'N/A')}, {customer_data.get('ciudad', 'N/A')}\n"
+                f"- Phone: {customer_data.get('celular', 'N/A')}\n\n"
+                f"Products:\n{products_summary}\n\n"
+                f"Grand Total: {total:,.2f} COP\n\n"
+                f"Present all this data to the customer and ask if everything is correct.\n"
+                f"LANGUAGE INSTRUCTION: {lang_instruction}"
+            ),
+            system_prompt="You are a friendly pharmacy assistant confirming a multi-product order. Show all customer data and all products with prices. Ask if everything is correct. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
+            temperature=0.7,
+        )
+        response = sanitize_response(msg.strip()) if msg else f"Order total: {total:,.2f} COP. Is everything correct?"
+    except Exception:
+        response = f"Order total: {total:,.2f} COP. Is everything correct?"
+
+    with st.chat_message("assistant"):
+        st.markdown(response)
+    st.session_state.messages.append({"role": "assistant", "content": response})
+    if st.session_state.user and st.session_state.current_conversation_id:
+        save_message(st.session_state.current_conversation_id, "assistant", response)
+
+
+def handle_multi_order_data_confirmation(prompt: str):
+    """Handles when the user confirms or denies their data for a multi-product order."""
+    confirmation = classify_data_confirmation(prompt)
+
+    if confirmation == "DATA_NOT_CONFIRMED":
+        st.session_state.order_flow = "multi_awaiting_data"
+        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        language = _detect_conversation_language()
+        lang_instruction = {"en": "You MUST respond ENTIRELY in English.", "fr": "You MUST respond ENTIRELY in French.", "es": "You MUST respond ENTIRELY in Spanish."}.get(language, "You MUST respond ENTIRELY in Spanish.")
+        try:
+            fallback = generate_content(
+                contents=f"The customer said their data is NOT correct. Ask them to send corrected data.\nLANGUAGE INSTRUCTION: {lang_instruction}",
+                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
+                temperature=0.7,
+            )
+            response = sanitize_response(fallback.strip()) if fallback else "Please send your corrected data."
+        except Exception:
+            response = "Please send your corrected data (name, document type, document number, email, address, city, phone)."
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
+    # DATA_CONFIRMED — Generate the PDF with all products
+    products = st.session_state.multi_order_products
+    customer_data = st.session_state.order_customer_data
+    language = _detect_conversation_language()
+
+    with st.spinner("Generating your invoice..."):
+        products_for_pdf = [
+            {
+                "nombre": p["name"],
+                "cantidad": p["quantity"],
+                "precio_unitario": float(p["price"]),
+                "subtotal": float(p["price"]) * p["quantity"],
+            }
+            for p in products
+        ]
+
+        pdf_bytes = generate_invoice_pdf(
+            customer_data=customer_data,
+            products=products_for_pdf,
+            language=language,
+        )
+
+    # Send invoice via email
+    total = sum(float(p["price"]) * p["quantity"] for p in products)
+    products_names = ", ".join(p["name"] for p in products)
+
+    email_result = send_invoice_email(
+        recipient_email=customer_data.get("correo", ""),
+        customer_name=customer_data.get("nombre", "Customer"),
+        pdf_bytes=pdf_bytes,
+        pdf_filename=f"factura_{customer_data.get('cedula', 'order')}.pdf",
+        order_summary={
+            "product": products_names,
+            "quantity": sum(p["quantity"] for p in products),
+            "total": total,
+        },
+        language=language,
+    )
+
+    if email_result["success"]:
+        print(f"[multi_order_flow] Invoice email sent to {customer_data.get('correo')}")
+    else:
+        print(f"[multi_order_flow] Failed to send email: {email_result.get('error')}")
+
+    # Generate success message
+    from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+    lang_instruction = {"en": "You MUST respond ENTIRELY in English.", "fr": "You MUST respond ENTIRELY in French.", "es": "You MUST respond ENTIRELY in Spanish."}.get(language, "You MUST respond ENTIRELY in Spanish.")
+
+    products_summary = "\n".join(f"- {p['name']} x{p['quantity']}: {float(p['price']) * p['quantity']:,.2f} COP" for p in products)
+
+    try:
+        success_msg = generate_content(
+            contents=(
+                f"The customer's invoice has been generated successfully for a multi-product order.\n"
+                f"Order summary:\n{products_summary}\n"
+                f"Grand Total: {total:,.2f} COP\n"
+                f"Email: {customer_data.get('correo', 'N/A')}\n\n"
+                f"Tell them their invoice is ready, show the full summary with all products, "
+                f"mention they can download it with the button below, and a copy will be sent to their email.\n"
+                f"LANGUAGE INSTRUCTION: {lang_instruction}"
+            ),
+            system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
+            temperature=0.7,
+            max_completion_tokens=400,
+        )
+        response = sanitize_response(success_msg.strip()) if success_msg else f"Invoice generated. Total: {total:,.2f} COP"
+    except Exception:
+        response = sanitize_response(f"Invoice generated successfully.\n\n{products_summary}\n\nTotal: {total:,.2f} COP\n\nDownload below. Copy sent to: {customer_data.get('correo', 'N/A')}")
+
+    with st.chat_message("assistant"):
+        st.markdown(response)
+        st.download_button(
+            label="📄 Download Invoice PDF" if language == "en" else ("📄 Telecharger Facture PDF" if language == "fr" else "📄 Descargar Factura PDF"),
+            data=pdf_bytes,
+            file_name=f"factura_{customer_data.get('cedula', 'order')}.pdf",
+            mime="application/pdf",
+            key=f"download_invoice_{uuid.uuid4().hex[:8]}",
+        )
+
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": response,
+        "pdf_bytes": pdf_bytes,
+        "pdf_filename": f"factura_{customer_data.get('cedula', 'order')}.pdf",
+    })
+    if st.session_state.user and st.session_state.current_conversation_id:
+        save_message(st.session_state.current_conversation_id, "assistant", response)
+
+    # Reset all order flow state
+    st.session_state.order_flow = None
+    st.session_state.order_product = None
+    st.session_state.order_customer_data = None
+    st.session_state.order_product_options = None
+    st.session_state.multi_order_products = None
+    st.session_state.multi_order_pending_options = None
+
+
 def on_chat_input_submit():
-    """Callback for chat text_input. Moves the value to a pending buffer and clears the widget."""
+    """Callback for chat text_input. Moves the value to a pending buffer and clears the widget.
+    Only triggered on Enter key press (form submission), not on blur.
+    """
     value = st.session_state.get("chat_text_input", "")
     if value:
         st.session_state.pending_chat_input = value
-        st.session_state.chat_text_input = ""
 
 
 def main():
@@ -1083,6 +2344,26 @@ def main():
 
     if "pending_chat_input" not in st.session_state:
         st.session_state.pending_chat_input = None
+
+    # Order flow states
+    if "order_flow" not in st.session_state:
+        st.session_state.order_flow = None  # None, "awaiting_product_selection", "awaiting_data", "awaiting_confirmation", "multi_awaiting_selection", "multi_awaiting_data", "multi_awaiting_confirmation"
+
+    if "order_product" not in st.session_state:
+        st.session_state.order_product = None  # {product, quantity, price} for single product orders
+
+    if "order_customer_data" not in st.session_state:
+        st.session_state.order_customer_data = None  # customer data dict
+
+    if "order_product_options" not in st.session_state:
+        st.session_state.order_product_options = None  # list of product dicts from DB
+
+    # Multi-product order states
+    if "multi_order_products" not in st.session_state:
+        st.session_state.multi_order_products = None  # list of confirmed products [{name, quantity, price, ...}]
+
+    if "multi_order_pending_options" not in st.session_state:
+        st.session_state.multi_order_pending_options = None  # list of products that need user selection
 
     # --- Session persistence via cookies ---
     cookie_manager = stx.CookieManager(key="cookie_manager")
@@ -1163,13 +2444,16 @@ def main():
                     st.session_state.show_uploader = not st.session_state.get("show_uploader", False)
                     st.rerun()
             with col_input:
-                st.text_input(
-                    "Ask me anything about our pharmacy...",
-                    placeholder="Ask me anything about our pharmacy...",
-                    label_visibility="collapsed",
-                    key="chat_text_input",
-                    on_change=on_chat_input_submit,
-                )
+                with st.form(key="chat_form", clear_on_submit=True, border=False):
+                    st.text_input(
+                        "Ask me anything about our pharmacy...",
+                        placeholder="Ask me anything about our pharmacy...",
+                        label_visibility="collapsed",
+                        key="chat_text_input",
+                    )
+                    submitted = st.form_submit_button("Send", type="primary")
+                    if submitted:
+                        on_chat_input_submit()
 
     # --- Process inputs captured from chat_text_input via callback ---
     if st.session_state.get("pending_chat_input"):
