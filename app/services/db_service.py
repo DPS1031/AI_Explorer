@@ -83,10 +83,25 @@ def find_matching_products(term: str) -> list[str]:
             # This prevents "Vitamina C" from matching "Vitamina D3".
             if " " in term.strip():
                 words = term.lower().split()
-                filtered = [
-                    r for r in results
-                    if all(w in r.lower() for w in words)
-                ]
+                filtered = []
+                for r in results:
+                    r_lower = r.lower()
+                    r_words = r_lower.split()
+                    match_all = True
+                    for w in words:
+                        if len(w) <= 2:
+                            # Short words (like "C", "D3") must appear as whole words
+                            # to avoid "c" matching as substring of "vitamina"
+                            if w not in r_words:
+                                match_all = False
+                                break
+                        else:
+                            # Longer words can match as substrings
+                            if w not in r_lower:
+                                match_all = False
+                                break
+                    if match_all:
+                        filtered.append(r)
                 if filtered:
                     cur.close()
                     return filtered

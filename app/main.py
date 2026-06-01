@@ -17,6 +17,8 @@ from app.services.ai_service import (
     summarize_query_results,
     analyze_image,
     generate_image_recommendation,
+    analyze_multiple_images,
+    generate_multi_image_recommendation,
     validate_sql,
     classify_order_intent,
     extract_order_product,
@@ -606,7 +608,7 @@ def render_welcome_screen():
         unsafe_allow_html=True,
     )
 
-    # Image preview (if an image is staged)
+    # Image preview (if an image is staged - single)
     if st.session_state.get("staged_image"):
         col_preview, col_remove = st.columns([5, 1])
         with col_preview:
@@ -615,6 +617,20 @@ def render_welcome_screen():
             if st.button("✕", key="remove_welcome_staged_image"):
                 st.session_state.staged_image = None
                 st.rerun()
+
+    # Image previews (if multiple images are staged)
+    if st.session_state.get("staged_images"):
+        cols_per_row = min(len(st.session_state.staged_images), 5)
+        img_cols = st.columns(cols_per_row + 1)
+        for idx, img_bytes in enumerate(st.session_state.staged_images[:cols_per_row]):
+            with img_cols[idx]:
+                st.image(img_bytes, width=100, caption=f"Image {idx + 1}")
+        with img_cols[cols_per_row]:
+            if st.button("✕ Clear all", key="remove_welcome_staged_images"):
+                st.session_state.staged_images = []
+                st.rerun()
+        if len(st.session_state.staged_images) > 5:
+            st.caption(f"+ {len(st.session_state.staged_images) - 5} more images")
 
     # Input row: clip on the left, text input on the right
     col_clip, col_input = st.columns([1, 12])
@@ -635,17 +651,37 @@ def render_welcome_screen():
     # File uploader appears only after clicking the clip button
     if st.session_state.get("show_uploader", False):
         uploaded = st.file_uploader(
-            "Upload a medication image",
+            "Upload medication images (up to 15)",
             type=["jpg", "jpeg", "png", "webp"],
             key="welcome_file_uploader",
+            accept_multiple_files=True,
         )
-        if uploaded is not None and st.session_state.get("staged_image") is None:
-            st.session_state.staged_image = uploaded.getvalue()
-            st.session_state.show_uploader = False
-            st.rerun()
+        if uploaded:
+            if len(uploaded) == 1 and st.session_state.get("staged_image") is None:
+                # Single image — use existing single-image flow
+                st.session_state.staged_image = uploaded[0].getvalue()
+                st.session_state.show_uploader = False
+                st.rerun()
+            elif len(uploaded) > 1:
+                # Multiple images — use multi-image flow (max 15)
+                new_images = [f.getvalue() for f in uploaded[:15]]
+                if new_images != st.session_state.get("staged_images"):
+                    st.session_state.staged_images = new_images
+                    st.session_state.staged_image = None  # Clear single image
+                    st.session_state.show_uploader = False
+                    st.rerun()
 
     if welcome_submitted and st.session_state.welcome_input:
-        if st.session_state.get("staged_image"):
+        if st.session_state.get("staged_images"):
+            # Multi-image flow
+            images_list = st.session_state.staged_images[:]
+            st.session_state.staged_images = []
+            st.session_state.staged_image = None
+            st.session_state.chat_started = True
+            st.session_state.show_uploader = False
+            handle_multi_image_query(images_list, st.session_state.welcome_input)
+            st.rerun()
+        elif st.session_state.get("staged_image"):
             image_bytes = st.session_state.staged_image
             st.session_state.staged_image = None
             st.session_state.chat_started = True
@@ -678,6 +714,16 @@ def render_chat_history():
             # Show image if the user message has one attached
             if message.get("image") and message["role"] == "user":
                 st.image(message["image"], width=250)
+            # Show multiple images if the user message has them
+            if message.get("images") and message["role"] == "user":
+                imgs = message["images"]
+                cols_per_row = min(len(imgs), 5)
+                img_cols = st.columns(cols_per_row)
+                for idx, img_bytes in enumerate(imgs[:cols_per_row]):
+                    with img_cols[idx]:
+                        st.image(img_bytes, width=120)
+                if len(imgs) > 5:
+                    st.caption(f"+ {len(imgs) - 5} more images")
             # Show PDF download button if this message has a generated invoice
             if message.get("pdf_bytes") and message["role"] == "assistant":
                 st.download_button(
@@ -824,35 +870,52 @@ def handle_image_query(image_bytes: bytes, user_text: str):
             # Step 3: Search for matching products in our DB
             products_data = []
             try:
-                # Extract a search term from the analysis
-                search_terms = image_analysis.lower().split()
-                # Try the first meaningful word (usually the drug name)
-                for term in search_terms:
-                    if len(term) >= 4 and term not in [
-                        "tablets",
-                        "capsules",
-                        "units",
-                        "by",
-                        "from",
-                        "with",
-                    ]:
-                        matches = find_matching_products(term)
-                        if matches:
-                            # Get full product details
-                            placeholders = ",".join([f"'{m}'" for m in matches])
-                            sql = f"""
-                                SELECT p.name, p.medication_dosage, p.dosage_form, p.laboratory, 
-                                       p.price, i.actual_stock, p.indication_and_symptoms
-                                FROM products p
-                                JOIN inventory i ON i.products_id = p.id
-                                WHERE p.name IN ({placeholders}) AND i.actual_stock > 0
-                            """
-                            columns, rows = execute_query(sql)
-                            if rows:
-                                products_data = [
-                                    dict(zip(columns, row)) for row in rows
-                                ]
+                # Extract the drug name from the analysis.
+                # Format: "Drug Name 400mg tablets by Bayer" or "Drug Name | dosage | form | lab"
+                if "|" in image_analysis:
+                    drug_name = image_analysis.split("|")[0].strip()
+                else:
+                    analysis_lower = image_analysis.lower().strip()
+                    noise_words = ["tablets", "capsules", "units", "by", "from", "with",
+                                   "sachet", "sachets", "syrup", "cream", "drops", "injection",
+                                   "tabletas", "cápsulas", "unidades", "por", "de", "con",
+                                   "mg", "ml", "iu", "mcg", "g", "forte"]
+                    words = analysis_lower.split()
+                    name_parts = []
+                    for w in words:
+                        if any(ch.isdigit() for ch in w) or w in noise_words:
                             break
+                        name_parts.append(w)
+                    # Check if next word is a single letter (like "C" in "Vitamin C")
+                    if name_parts and len(name_parts) < len(words):
+                        next_w = words[len(name_parts)]
+                        if len(next_w) == 1 and next_w.isalpha():
+                            name_parts.append(next_w)
+                    drug_name = " ".join(name_parts) if name_parts else image_analysis.split()[0]
+
+                # Search with full drug name first, then first word as fallback
+                search_terms = [drug_name]
+                first_word = drug_name.split()[0] if drug_name else ""
+                if first_word and first_word != drug_name:
+                    search_terms.append(first_word)
+
+                for term in search_terms:
+                    matches = find_matching_products(term)
+                    if matches:
+                        placeholders = ",".join([f"'{m}'" for m in matches])
+                        sql = f"""
+                            SELECT p.name, p.medication_dosage, p.dosage_form, p.laboratory, 
+                                   p.price, i.actual_stock, p.indication_and_symptoms
+                            FROM products p
+                            JOIN inventory i ON i.products_id = p.id
+                            WHERE p.name IN ({placeholders}) AND i.actual_stock > 0
+                        """
+                        columns, rows = execute_query(sql)
+                        if rows:
+                            products_data = [
+                                dict(zip(columns, row)) for row in rows
+                            ]
+                        break
             except Exception:
                 pass
 
@@ -874,6 +937,173 @@ def handle_image_query(image_bytes: bytes, user_text: str):
         and len(st.session_state.messages) == 2
     ):
         title = (user_text[:50] if user_text else "Image analysis") + (
+            "..." if len(user_text) > 50 else ""
+        )
+        update_conversation_title(st.session_state.current_conversation_id, title)
+
+
+def handle_multi_image_query(images_list: list[bytes], user_text: str):
+    """Handles multi-image queries: identifies medications in all images, searches DB, and integrates with multi-order flow."""
+    # If user is logged in, create conversation if it doesn't exist
+    if st.session_state.user and not st.session_state.current_conversation_id:
+        conv_id = create_conversation(st.session_state.user["id"])
+        st.session_state.current_conversation_id = conv_id
+
+    # Save user message with first image as preview
+    display_text = user_text if user_text else f"📷 [{len(images_list)} images uploaded]"
+    st.session_state.messages.append({"role": "user", "content": display_text, "images": images_list})
+    if st.session_state.user and st.session_state.current_conversation_id:
+        # Save first image as reference
+        image_b64 = base64.b64encode(images_list[0]).decode("utf-8")
+        save_message(st.session_state.current_conversation_id, "user", display_text, image=image_b64)
+
+    with st.chat_message("user"):
+        st.markdown(display_text)
+        # Show thumbnails of all uploaded images
+        cols_per_row = min(len(images_list), 5)
+        img_cols = st.columns(cols_per_row)
+        for idx, img_bytes in enumerate(images_list[:cols_per_row]):
+            with img_cols[idx]:
+                st.image(img_bytes, width=120)
+        if len(images_list) > 5:
+            st.caption(f"+ {len(images_list) - 5} more images")
+
+    with st.chat_message("assistant"):
+        with st.spinner(f"Analyzing {len(images_list)} images..."):
+            # Step 1: Encode all images to base64
+            images_base64 = [base64.b64encode(img).decode("utf-8") for img in images_list]
+
+            # Step 2: Analyze all images to identify medications
+            image_analyses = analyze_multiple_images(images_base64, user_text)
+
+            if not image_analyses:
+                response = "I couldn't identify medications in the uploaded images. Please try uploading clearer photos of the medication packaging."
+                st.markdown(response)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                if st.session_state.user and st.session_state.current_conversation_id:
+                    save_message(st.session_state.current_conversation_id, "assistant", response)
+                return
+
+            # Step 3: For each identified medication, search for matching products in DB
+            products_by_image = []
+            all_products_found = []  # For multi-order flow: products with exactly 1 match
+            all_products_with_options = []  # Products with multiple options needing selection
+            all_not_found = []  # Medications not found in DB
+
+            for i, analysis in enumerate(image_analyses):
+                if analysis.upper() == "NOT_MEDICATION":
+                    products_by_image.append([])
+                    continue
+
+                # Extract the drug name from the analysis.
+                # The analysis format is now: "Drug Name | dosage | form | laboratory"
+                # OR legacy format: "Drug Name 400mg tablets by Bayer"
+                products_data = []
+                matched_product_name = None
+                try:
+                    # Try structured format first (pipe-separated)
+                    if "|" in analysis:
+                        drug_name = analysis.split("|")[0].strip()
+                    else:
+                        # Legacy format: extract words before first number/noise
+                        analysis_lower = analysis.lower().strip()
+                        noise_words = ["tablets", "capsules", "units", "by", "from", "with",
+                                       "sachet", "sachets", "syrup", "cream", "drops", "injection",
+                                       "tabletas", "cápsulas", "unidades", "por", "de", "con",
+                                       "mg", "ml", "iu", "mcg", "g", "forte"]
+                        words = analysis_lower.split()
+                        name_parts = []
+                        for w in words:
+                            if any(ch.isdigit() for ch in w) or w in noise_words:
+                                break
+                            name_parts.append(w)
+                        # Check if next word is a single letter (like "C" in "Vitamin C")
+                        if name_parts and len(name_parts) < len(words):
+                            next_w = words[len(name_parts)]
+                            if len(next_w) == 1 and next_w.isalpha():
+                                name_parts.append(next_w)
+                        drug_name = " ".join(name_parts) if name_parts else analysis.split()[0]
+
+                    # Search the DB with the extracted drug name
+                    # Try the full name first, then just the first word as fallback
+                    search_terms = [drug_name]
+                    first_word = drug_name.split()[0] if drug_name else ""
+                    if first_word and first_word != drug_name:
+                        search_terms.append(first_word)
+
+                    for term in search_terms:
+                        matches = find_matching_products(term)
+                        if matches:
+                            # If we searched with a multi-word term and got results,
+                            # those results are already filtered. Use them directly.
+                            placeholders = ",".join([f"'{m}'" for m in matches])
+                            sql = f"""
+                                SELECT p.name, p.medication_dosage, p.dosage_form, p.laboratory, 
+                                       p.price, i.actual_stock, p.indication_and_symptoms
+                                FROM products p
+                                JOIN inventory i ON i.products_id = p.id
+                                WHERE p.name IN ({placeholders}) AND i.actual_stock > 0
+                            """
+                            columns, rows = execute_query(sql)
+                            if rows:
+                                products_data = [dict(zip(columns, row)) for row in rows]
+                                matched_product_name = matches[0] if len(matches) == 1 else drug_name
+                            break
+                except Exception:
+                    pass
+
+                products_by_image.append(products_data)
+
+                # Categorize for multi-order flow
+                if not products_data:
+                    all_not_found.append(analysis)
+                elif len(products_data) == 1:
+                    # Exactly 1 match — confirmed product
+                    p = dict(products_data[0])
+                    p["quantity"] = 1
+                    all_products_found.append(p)
+                else:
+                    # Multiple options — need user selection
+                    # Use the clean matched product name for selection matching later
+                    clean_search = matched_product_name if matched_product_name else drug_name
+                    all_products_with_options.append({
+                        "search_term": clean_search,
+                        "quantity": 1,
+                        "options": products_data,
+                    })
+
+            # Step 4: Generate recommendation response
+            language = _detect_conversation_language()
+            response = sanitize_response(generate_multi_image_recommendation(
+                user_text, image_analyses, products_by_image, language=language
+            ))
+
+        st.markdown(response)
+
+    st.session_state.messages.append({"role": "assistant", "content": response})
+    if st.session_state.user and st.session_state.current_conversation_id:
+        save_message(st.session_state.current_conversation_id, "assistant", response)
+
+    # Step 5: Set up multi-order flow state so the user can proceed to order
+    # Only set up if we found at least some products
+    if all_products_found or all_products_with_options:
+        st.session_state.multi_order_products = all_products_found
+        st.session_state.multi_order_pending_options = all_products_with_options if all_products_with_options else None
+
+        if all_products_with_options:
+            # Some products need selection — set state to await selection
+            st.session_state.order_flow = "multi_awaiting_selection"
+        # If all products are confirmed (no options), we don't auto-enter the order flow.
+        # The user will say "yes I want to order" and the normal ORDER_CONFIRMED flow will handle it,
+        # picking up the already-set multi_order_products state.
+
+    # Generate conversation title if first message
+    if (
+        st.session_state.user
+        and st.session_state.current_conversation_id
+        and len(st.session_state.messages) == 2
+    ):
+        title = (user_text[:50] if user_text else f"Multi-image analysis ({len(images_list)} images)") + (
             "..." if len(user_text) > 50 else ""
         )
         update_conversation_title(st.session_state.current_conversation_id, title)
@@ -1186,6 +1416,49 @@ def handle_order_confirmed(prompt: str):
     """Handles when the user confirms they want to order a product.
     Shows all available presentations/options before asking for personal data.
     """
+    # Check if there are pre-loaded products from multi-image analysis
+    if st.session_state.get("multi_order_products") and not st.session_state.get("order_flow"):
+        # Products were already identified from images — route to multi-order flow directly
+        products_found = st.session_state.multi_order_products
+        products_with_options = st.session_state.get("multi_order_pending_options") or []
+
+        if products_with_options:
+            st.session_state.order_flow = "multi_awaiting_selection"
+            language = _detect_conversation_language()
+            response = sanitize_response(
+                generate_multi_order_summary(products_found, [], products_with_options, prompt, language=language)
+            )
+        else:
+            # All products confirmed — go to data collection
+            st.session_state.order_flow = "multi_awaiting_data"
+            language = _detect_conversation_language()
+            from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+            lang_instruction = {"en": "You MUST respond ENTIRELY in English.", "fr": "You MUST respond ENTIRELY in French.", "es": "You MUST respond ENTIRELY in Spanish."}.get(language, "You MUST respond ENTIRELY in Spanish.")
+            total = sum(float(p["price"]) * p["quantity"] for p in products_found)
+            products_summary = "\n".join(f"- {p['name']} ({p.get('laboratory', '')}) x{p['quantity']} = {float(p['price']) * p['quantity']:,.2f} COP" for p in products_found)
+            try:
+                msg = generate_content(
+                    contents=(
+                        f"The customer confirmed they want to order these products (identified from images):\n{products_summary}\n"
+                        f"Grand Total: {total:,.2f} COP\n\n"
+                        f"Now ask the customer for their personal data to generate the invoice "
+                        f"(full name, document type, document number, email, address, city, phone).\n"
+                        f"LANGUAGE INSTRUCTION: {lang_instruction}"
+                    ),
+                    system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
+                    temperature=0.7,
+                )
+                response = sanitize_response(msg.strip()) if msg else "All products confirmed. Please provide your personal data."
+            except Exception:
+                response = f"Order confirmed. Total: {total:,.2f} COP. Please provide your personal data."
+
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", response)
+        return
+
     # Build history that excludes previous completed orders.
     # Find the last "order completed" marker in messages and only use messages after it.
     all_messages = st.session_state.messages if st.session_state.messages else []
@@ -1350,6 +1623,8 @@ def handle_order_confirmed(prompt: str):
             "product": selected["name"],
             "quantity": quantity,
             "price": float(selected["price"]),
+            "laboratory": selected.get("laboratory", "N/A"),
+            "dosage": selected.get("medication_dosage", "N/A"),
         }
         st.session_state.order_flow = "awaiting_data"
 
@@ -1505,6 +1780,8 @@ def handle_order_product_selection(prompt: str):
         "product": selected["name"],
         "quantity": quantity,
         "price": float(selected["price"]),
+        "laboratory": selected.get("laboratory", "N/A"),
+        "dosage": selected.get("medication_dosage", "N/A"),
     }
     st.session_state.order_product_options = None
     st.session_state.order_flow = "awaiting_data"
@@ -1699,6 +1976,8 @@ def handle_order_data_confirmation(prompt: str):
                 "cantidad": order_product["quantity"],
                 "precio_unitario": order_product["price"],
                 "subtotal": order_product["price"] * order_product["quantity"],
+                "laboratorio": order_product.get("laboratory", "N/A"),
+                "dosis": order_product.get("dosage", "N/A"),
             }
         ]
 
@@ -1947,22 +2226,73 @@ def handle_multi_order_selection(prompt: str):
     with st.spinner("Processing your selections..."):
         selections = parse_multi_order_selection(prompt, history=history)
 
-    # Fallback: if model couldn't parse but user mentions a lab name that matches pending options,
-    # try to resolve directly
+    # Fallback: if model couldn't parse but user mentions a lab name or product name 
+    # that matches pending options, try to resolve directly
     if not selections and pending:
         prompt_lower = prompt.lower()
         fallback_selections = []
         for item in pending:
+            matched = False
             for i, opt in enumerate(item["options"]):
                 lab = opt.get("laboratory", "").lower()
+                opt_name = opt.get("name", "").lower()
+                # Match by laboratory name mentioned in user's message
                 if lab and lab in prompt_lower:
                     fallback_selections.append({
                         "product": item["search_term"].lower(),
                         "selection": i + 1,
                         "quantity": item["quantity"],
                     })
+                    matched = True
+                    break
+            if not matched:
+                # Try matching by product name in the user's message
+                for i, opt in enumerate(item["options"]):
+                    opt_name = opt.get("name", "").lower()
+                    if opt_name and opt_name in prompt_lower:
+                        fallback_selections.append({
+                            "product": item["search_term"].lower(),
+                            "selection": i + 1,
+                            "quantity": item["quantity"],
+                        })
+                        matched = True
+                        break
+            if not matched:
+                # Try cross-language: use find_matching_products on words from the prompt
+                # to see if any resolve to an option name
+                prompt_words = [w for w in prompt_lower.split() if len(w) >= 4]
+                for pw in prompt_words:
+                    try:
+                        fuzzy = find_matching_products(pw)
+                        if fuzzy:
+                            for i, opt in enumerate(item["options"]):
+                                if opt.get("name", "") in fuzzy:
+                                    fallback_selections.append({
+                                        "product": item["search_term"].lower(),
+                                        "selection": i + 1,
+                                        "quantity": item["quantity"],
+                                    })
+                                    matched = True
+                                    break
+                    except Exception:
+                        pass
+                    if matched:
+                        break
         if fallback_selections:
             selections = fallback_selections
+
+    if not selections:
+        # Additional fallback: if user typed just a number and there's only one pending item,
+        # treat it as the option number for that item
+        prompt_stripped = prompt.strip()
+        if pending and prompt_stripped.isdigit():
+            num = int(prompt_stripped)
+            if len(pending) == 1 and 1 <= num <= len(pending[0]["options"]):
+                selections = [{
+                    "product": pending[0]["search_term"].lower(),
+                    "selection": num,
+                    "quantity": pending[0]["quantity"],
+                }]
 
     if not selections:
         # Couldn't parse — ask again
@@ -1991,18 +2321,45 @@ def handle_multi_order_selection(prompt: str):
 
     for item in pending:
         search_lower = item["search_term"].lower().strip()
-        # Find all selections that match this pending product
-        # Use fuzzy matching: check if the selection product name contains or is contained by the search term
+        # Find all selections that match this pending product.
+        # We check against the search_term AND the actual option names in the DB.
         matching_selections = []
+        
+        # Collect the actual product names from this item's options for matching
+        option_names_lower = [opt.get("name", "").lower() for opt in item.get("options", [])]
+        
         for s in selections:
             s_product = s["product"].lower().strip()
-            # Match if: exact match, one contains the other, or they share a significant prefix (>= 4 chars)
-            if (s_product == search_lower 
-                or s_product in search_lower 
-                or search_lower in s_product
-                or (len(search_lower) >= 4 and len(s_product) >= 4 and 
-                    (s_product[:4] == search_lower[:4]))):
+            
+            # Match strategies (from most to least specific):
+            # 1. Exact match with search term
+            if s_product == search_lower:
                 matching_selections.append(s)
+                continue
+            # 2. Selection product name matches one of the actual option names (exact or substring)
+            if any(s_product in opt_name or opt_name in s_product for opt_name in option_names_lower if opt_name):
+                matching_selections.append(s)
+                continue
+            # 3. Selection product is contained in search term or vice versa
+            if s_product in search_lower or search_lower in s_product:
+                matching_selections.append(s)
+                continue
+            # 4. They share a significant common word (>= 4 chars)
+            s_words = set(w for w in s_product.split() if len(w) >= 4)
+            search_words = set(w for w in search_lower.split() if len(w) >= 4)
+            common_words = s_words & search_words
+            if common_words:
+                matching_selections.append(s)
+                continue
+            # 5. Cross-language fuzzy match: use find_matching_products to check if 
+            #    the selection product name resolves to any of the option names
+            try:
+                fuzzy_matches = find_matching_products(s_product)
+                if fuzzy_matches and any(fm.lower() in option_names_lower for fm in fuzzy_matches):
+                    matching_selections.append(s)
+                    continue
+            except Exception:
+                pass
 
         if matching_selections:
             for sel in matching_selections:
@@ -2011,7 +2368,13 @@ def handle_multi_order_selection(prompt: str):
                 if 0 <= idx < len(item["options"]):
                     chosen = dict(item["options"][idx])  # Copy to avoid mutation
                     chosen["quantity"] = qty
-                    confirmed.append(chosen)
+                    # Avoid adding duplicates (same product name + lab already in confirmed)
+                    is_duplicate = any(
+                        c.get("name") == chosen.get("name") and c.get("laboratory") == chosen.get("laboratory")
+                        for c in confirmed
+                    )
+                    if not is_duplicate:
+                        confirmed.append(chosen)
             # Product resolved — don't add to still_pending
         else:
             # No selection found for this product
@@ -2219,6 +2582,8 @@ def handle_multi_order_data_confirmation(prompt: str):
                 "cantidad": p["quantity"],
                 "precio_unitario": float(p["price"]),
                 "subtotal": float(p["price"]) * p["quantity"],
+                "laboratorio": p.get("laboratory", "N/A"),
+                "dosis": p.get("dosage", p.get("medication_dosage", "N/A")),
             }
             for p in products
         ]
@@ -2342,6 +2707,9 @@ def main():
     if "staged_image" not in st.session_state:
         st.session_state.staged_image = None
 
+    if "staged_images" not in st.session_state:
+        st.session_state.staged_images = []  # List of image bytes for multi-image upload
+
     if "pending_chat_input" not in st.session_state:
         st.session_state.pending_chat_input = None
 
@@ -2416,18 +2784,27 @@ def main():
         if st.session_state.get("show_uploader", False):
             with st.container(key="chat_uploader_container"):
                 uploaded = st.file_uploader(
-                    "Upload a medication image",
+                    "Upload medication images (up to 15)",
                     type=["jpg", "jpeg", "png", "webp"],
                     key="chat_file_uploader",
+                    accept_multiple_files=True,
                 )
-                if uploaded is not None and st.session_state.get("staged_image") is None:
-                    st.session_state.staged_image = uploaded.getvalue()
-                    st.session_state.show_uploader = False
-                    st.rerun()
+                if uploaded:
+                    if len(uploaded) == 1 and st.session_state.get("staged_image") is None:
+                        st.session_state.staged_image = uploaded[0].getvalue()
+                        st.session_state.show_uploader = False
+                        st.rerun()
+                    elif len(uploaded) > 1:
+                        new_images = [f.getvalue() for f in uploaded[:15]]
+                        if new_images != st.session_state.get("staged_images"):
+                            st.session_state.staged_images = new_images
+                            st.session_state.staged_image = None
+                            st.session_state.show_uploader = False
+                            st.rerun()
 
         # Input area pinned to bottom via CSS on the container key
         with st.container(key="chat_input_container"):
-            # Image preview (if an image is staged)
+            # Image preview (if a single image is staged)
             if st.session_state.get("staged_image"):
                 col_preview, col_remove = st.columns([5, 1])
                 with col_preview:
@@ -2436,6 +2813,20 @@ def main():
                     if st.button("✕", key="remove_staged_image"):
                         st.session_state.staged_image = None
                         st.rerun()
+
+            # Image previews (if multiple images are staged)
+            if st.session_state.get("staged_images"):
+                cols_per_row = min(len(st.session_state.staged_images), 5)
+                img_cols = st.columns(cols_per_row + 1)
+                for idx, img_bytes in enumerate(st.session_state.staged_images[:cols_per_row]):
+                    with img_cols[idx]:
+                        st.image(img_bytes, width=80, caption=f"{idx + 1}")
+                with img_cols[cols_per_row]:
+                    if st.button("✕", key="remove_staged_images"):
+                        st.session_state.staged_images = []
+                        st.rerun()
+                if len(st.session_state.staged_images) > 5:
+                    st.caption(f"+ {len(st.session_state.staged_images) - 5} more")
 
             # Input row: clip on the left, text input on the right
             col_clip, col_input = st.columns([1, 12])
@@ -2459,7 +2850,15 @@ def main():
     if st.session_state.get("pending_chat_input"):
         prompt = st.session_state.pending_chat_input
         st.session_state.pending_chat_input = None
-        if st.session_state.get("staged_image"):
+        if st.session_state.get("staged_images"):
+            # Multi-image flow
+            images_list = st.session_state.staged_images[:]
+            st.session_state.staged_images = []
+            st.session_state.staged_image = None
+            st.session_state.show_uploader = False
+            handle_multi_image_query(images_list, prompt)
+            st.rerun()
+        elif st.session_state.get("staged_image"):
             image_bytes = st.session_state.staged_image
             st.session_state.staged_image = None
             st.session_state.show_uploader = False

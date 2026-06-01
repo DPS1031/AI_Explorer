@@ -27,7 +27,9 @@ TRANSLATIONS = {
         "phone": "Celular / Telefono",
         "products_section": "Detalle de Productos",
         "product": "Producto",
+        "laboratory": "Laboratorio",
         "quantity": "Cantidad",
+        "dosage": "Dosis",
         "unit_price": "Precio Unitario",
         "subtotal": "Subtotal",
         "total": "TOTAL:",
@@ -52,7 +54,9 @@ TRANSLATIONS = {
         "phone": "Phone",
         "products_section": "Product Details",
         "product": "Product",
+        "laboratory": "Laboratory",
         "quantity": "Quantity",
+        "dosage": "Dosage",
         "unit_price": "Unit Price",
         "subtotal": "Subtotal",
         "total": "TOTAL:",
@@ -77,7 +81,9 @@ TRANSLATIONS = {
         "phone": "Telephone",
         "products_section": "Detail des Produits",
         "product": "Produit",
+        "laboratory": "Laboratoire",
         "quantity": "Quantite",
+        "dosage": "Dosage",
         "unit_price": "Prix Unitaire",
         "subtotal": "Sous-total",
         "total": "TOTAL:",
@@ -220,10 +226,10 @@ def generate_invoice_pdf(
     # Table header
     pdf.set_fill_color(33, 97, 140)
     pdf.set_text_color(255, 255, 255)
-    pdf.set_font("Helvetica", "B", 9)
+    pdf.set_font("Helvetica", "B", 8)
 
-    col_widths = [75, 30, 40, 45]  # Product, Qty, Unit Price, Subtotal
-    headers = [t["product"], t["quantity"], t["unit_price"], t["subtotal"]]
+    col_widths = [50, 30, 20, 30, 30, 30]  # Product, Lab, Qty, Dosage, Unit Price, Subtotal
+    headers = [t["product"], t["laboratory"], t["quantity"], t["dosage"], t["unit_price"], t["subtotal"]]
 
     for i, header in enumerate(headers):
         pdf.cell(col_widths[i], 8, header, border=1, align="C", fill=True)
@@ -231,7 +237,7 @@ def generate_invoice_pdf(
 
     # Table rows
     pdf.set_text_color(33, 33, 33)
-    pdf.set_font("Helvetica", "", 9)
+    pdf.set_font("Helvetica", "", 8)
     fill = False
     total = 0.0
 
@@ -242,26 +248,30 @@ def generate_invoice_pdf(
             pdf.set_fill_color(255, 255, 255)
 
         nombre = str(product.get("nombre", ""))
+        laboratorio = str(product.get("laboratorio", "N/A"))
+        dosis = str(product.get("dosis", "N/A"))
         cantidad = int(product.get("cantidad", 1))
         precio_unitario = float(product.get("precio_unitario", 0))
         subtotal = float(product.get("subtotal", precio_unitario * cantidad))
         total += subtotal
 
-        pdf.cell(col_widths[0], 7, nombre[:40], border=1, align="L", fill=True)
-        pdf.cell(col_widths[1], 7, str(cantidad), border=1, align="C", fill=True)
-        pdf.cell(col_widths[2], 7, f"{precio_unitario:,.2f} COP", border=1, align="R", fill=True)
-        pdf.cell(col_widths[3], 7, f"{subtotal:,.2f} COP", border=1, align="R", fill=True)
+        pdf.cell(col_widths[0], 7, nombre[:28], border=1, align="L", fill=True)
+        pdf.cell(col_widths[1], 7, laboratorio[:16], border=1, align="C", fill=True)
+        pdf.cell(col_widths[2], 7, str(cantidad), border=1, align="C", fill=True)
+        pdf.cell(col_widths[3], 7, dosis[:16], border=1, align="C", fill=True)
+        pdf.cell(col_widths[4], 7, f"{precio_unitario:,.2f} COP", border=1, align="R", fill=True)
+        pdf.cell(col_widths[5], 7, f"{subtotal:,.2f} COP", border=1, align="R", fill=True)
         pdf.ln()
         fill = not fill
 
     # Total row
-    pdf.ln(2)
+    pdf.ln(4)
     pdf.set_font("Helvetica", "B", 11)
     pdf.set_text_color(33, 97, 140)
-    total_label_width = col_widths[0] + col_widths[1] + col_widths[2]
-    pdf.cell(total_label_width, 9, t["total"], align="R")
+    total_label_width = col_widths[0] + col_widths[1] + col_widths[2] + col_widths[3] + col_widths[4]
+    pdf.cell(total_label_width, 9, f"{t['total']}  ", align="R")
     pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(col_widths[3], 9, f"{total:,.2f} COP", border=1, align="R")
+    pdf.cell(col_widths[5], 9, f" {total:,.2f} COP", border=1, align="R")
     pdf.ln(15)
 
     # --- Footer note ---
