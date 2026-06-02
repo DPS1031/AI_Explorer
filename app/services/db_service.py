@@ -4,18 +4,27 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DB_CONFIG = {
-    "host": os.getenv("POSTGRES_HOST", "localhost"),
-    "port": 5432,
-    "dbname": os.getenv("POSTGRES_DB"),
-    "user": os.getenv("POSTGRES_USER"),
-    "password": os.getenv("POSTGRES_PASSWORD"),
-}
+
+def _get_db_config() -> dict | str:
+    """Returns connection config. Prefers DATABASE_URL if set (for RDS/production)."""
+    database_url = os.getenv("DATABASE_URL")
+    if database_url:
+        return database_url
+    return {
+        "host": os.getenv("POSTGRES_HOST", "localhost"),
+        "port": int(os.getenv("POSTGRES_PORT", "5432")),
+        "dbname": os.getenv("POSTGRES_DB"),
+        "user": os.getenv("POSTGRES_USER"),
+        "password": os.getenv("POSTGRES_PASSWORD"),
+    }
 
 
 def get_connection():
     """Creates and returns a PostgreSQL connection."""
-    return psycopg2.connect(**DB_CONFIG)
+    config = _get_db_config()
+    if isinstance(config, str):
+        return psycopg2.connect(config)
+    return psycopg2.connect(**config)
 
 
 def run_migrations():

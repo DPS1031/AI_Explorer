@@ -13,13 +13,27 @@ from botocore.exceptions import ClientError
 
 
 def _get_ses_client():
-    """Creates and returns a boto3 SES client using environment variables."""
-    return boto3.client(
-        "ses",
-        region_name=os.getenv("AWS_REGION", "us-east-1"),
-        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-    )
+    """Creates and returns a boto3 SES client.
+    
+    In AWS (ECS/EC2), uses IAM Role automatically (no keys needed).
+    Locally, falls back to environment variables or ~/.aws/credentials.
+    """
+    region = os.getenv("AWS_REGION", "us-east-1")
+    
+    # If explicit keys are set (local development), use them
+    access_key = os.getenv("AWS_ACCESS_KEY_ID")
+    secret_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+    
+    if access_key and secret_key:
+        return boto3.client(
+            "ses",
+            region_name=region,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+        )
+    
+    # In AWS, boto3 automatically uses the IAM Role attached to the task/instance
+    return boto3.client("ses", region_name=region)
 
 
 def send_invoice_email(
