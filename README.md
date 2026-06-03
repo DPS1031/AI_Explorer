@@ -34,7 +34,7 @@ An AI-powered pharmacy assistant that combines natural language understanding wi
  
 | Conversation History | Email Delivery |
 |---|---|
-| `[screenshot-sidebar.png]` | `[screenshot-email.png]` |
+| <img width="301" height="891" alt="image" src="https://github.com/user-attachments/assets/96eed8ee-8693-4333-9166-e5213036434a" /> | <img width="1274" height="758" alt="image" src="https://github.com/user-attachments/assets/8fc205ad-aa15-4b3c-9a1c-738bf4f9bc83" /> |
  
 ---
 
