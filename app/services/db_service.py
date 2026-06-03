@@ -117,6 +117,59 @@ def find_matching_products(term: str) -> list[str]:
             cur.close()
             return results
 
+        # If no exact match, try common cross-language name variations
+        # This handles cases like "vitamina c" (Spanish) -> "Vitamin C" (English in DB)
+        cross_lang_map = {
+            "vitamina": "vitamin",
+            "vitamin": "vitamina",
+            "acetaminofen": "acetaminophen",
+            "acetaminophen": "acetaminofen",
+            "ibuprofeno": "ibuprofen",
+            "ibuprofen": "ibuprofeno",
+            "amoxicilina": "amoxicillin",
+            "amoxicillin": "amoxicilina",
+            "loratadina": "loratadine",
+            "loratadine": "loratadina",
+            "cetirizina": "cetirizine",
+            "cetirizine": "cetirizina",
+            "naproxeno": "naproxen",
+            "naproxen": "naproxeno",
+        }
+        term_lower = term.lower()
+        for original, replacement in cross_lang_map.items():
+            if original in term_lower:
+                alt_term = term_lower.replace(original, replacement)
+                cur.execute(
+                    "SELECT DISTINCT name FROM products WHERE LOWER(name) LIKE %s ORDER BY name",
+                    (f"%{alt_term}%",),
+                )
+                alt_results = [row[0] for row in cur.fetchall()]
+                if alt_results:
+                    # Apply multi-word filtering for the alternative term
+                    if " " in alt_term.strip():
+                        alt_words = alt_term.split()
+                        filtered = []
+                        for r in alt_results:
+                            r_lower = r.lower()
+                            r_words = r_lower.split()
+                            match_all = True
+                            for w in alt_words:
+                                if len(w) <= 2:
+                                    if w not in r_words:
+                                        match_all = False
+                                        break
+                                else:
+                                    if w not in r_lower:
+                                        match_all = False
+                                        break
+                            if match_all:
+                                filtered.append(r)
+                        if filtered:
+                            cur.close()
+                            return filtered
+                    cur.close()
+                    return alt_results
+
         # If no exact match, try each word individually for partial match
         # This handles cross-language cases like "vitamina C" matching "Vitamin C"
         words = term.lower().split()

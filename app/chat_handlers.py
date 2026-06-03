@@ -82,6 +82,7 @@ def handle_image_query(image_bytes: bytes, user_text: str):
 
             # Step 2: Analyze the image to identify the medication
             image_analysis = analyze_image(image_base64, user_text)
+            print(f"[DEBUG handle_image_query] image_analysis = '{image_analysis}'")
 
             if image_analysis is None or image_analysis == "NOT_MEDICATION":
                 response = "I couldn't identify a medication in the image. Please try uploading a clearer photo of the medication packaging, or describe what you need help with."
@@ -100,14 +101,20 @@ def handle_image_query(image_bytes: bytes, user_text: str):
             try:
                 # Extract the drug name from the analysis.
                 # Format: "Drug Name 400mg tablets by Bayer" or "Drug Name | dosage | form | lab"
+                import re
+
                 if "|" in image_analysis:
                     drug_name = image_analysis.split("|")[0].strip()
                 else:
-                    analysis_lower = image_analysis.lower().strip()
+                    # Clean punctuation that might interfere with parsing
+                    analysis_clean = re.sub(r'[(),\[\]{}"\'`]', ' ', image_analysis)
+                    analysis_lower = analysis_clean.lower().strip()
                     noise_words = ["tablets", "capsules", "units", "by", "from", "with",
                                    "sachet", "sachets", "syrup", "cream", "drops", "injection",
                                    "tabletas", "cápsulas", "unidades", "por", "de", "con",
-                                   "mg", "ml", "iu", "mcg", "g", "forte"]
+                                   "mg", "ml", "iu", "mcg", "g", "forte", "containing",
+                                   "box", "pack", "package", "blister", "bottle", "over",
+                                   "the", "counter", "supplement", "dietary"]
                     words = analysis_lower.split()
                     name_parts = []
                     for w in words:
@@ -121,9 +128,26 @@ def handle_image_query(image_bytes: bytes, user_text: str):
                             name_parts.append(next_w)
                     drug_name = " ".join(name_parts) if name_parts else image_analysis.split()[0]
 
-                # Search with full drug name first, then first word as fallback
+                # Remove any trailing punctuation from drug_name
+                drug_name = drug_name.strip(" .,;:-\"'`")
+                print(f"[DEBUG handle_image_query] drug_name = '{drug_name}', search_terms will be built from this")
+
+                # Build search terms: full name, cross-language variations, first word
                 search_terms = [drug_name]
-                first_word = drug_name.split()[0] if drug_name else ""
+                drug_name_lower = drug_name.lower()
+                if "vitamina" in drug_name_lower:
+                    search_terms.append(drug_name_lower.replace("vitamina", "vitamin"))
+                elif "vitamin" in drug_name_lower and "vitamina" not in drug_name_lower:
+                    search_terms.append(drug_name_lower.replace("vitamin", "vitamina"))
+
+                # If the extracted name has more than 2 words, also try just the first 2 words
+                # This handles cases like "vitamin c ascorbic acid" where extra info was captured
+                drug_words = drug_name.split()
+                if len(drug_words) > 2:
+                    short_name = " ".join(drug_words[:2])
+                    search_terms.append(short_name)
+
+                first_word = drug_words[0] if drug_words else ""
                 if first_word and first_word != drug_name:
                     search_terms.append(first_word)
 
@@ -144,12 +168,14 @@ def handle_image_query(image_bytes: bytes, user_text: str):
                                 dict(zip(columns, row)) for row in rows
                             ]
                         break
-            except Exception:
+            except Exception as e:
+                print(f"[handle_image_query] Error searching products: {e}")
                 pass
 
             # Step 4: Generate recommendation response
+            language = _detect_conversation_language()
             response = sanitize_response(generate_image_recommendation(
-                user_text, image_analysis, products_data
+                user_text, image_analysis, products_data, language=language
             ))
 
         st.markdown(response)
@@ -234,11 +260,15 @@ def handle_multi_image_query(images_list: list[bytes], user_text: str):
                         drug_name = analysis.split("|")[0].strip()
                     else:
                         # Legacy format: extract words before first number/noise
-                        analysis_lower = analysis.lower().strip()
+                        import re
+                        analysis_clean = re.sub(r'[(),\[\]{}"\'`]', ' ', analysis)
+                        analysis_lower = analysis_clean.lower().strip()
                         noise_words = ["tablets", "capsules", "units", "by", "from", "with",
                                        "sachet", "sachets", "syrup", "cream", "drops", "injection",
                                        "tabletas", "cápsulas", "unidades", "por", "de", "con",
-                                       "mg", "ml", "iu", "mcg", "g", "forte"]
+                                       "mg", "ml", "iu", "mcg", "g", "forte", "containing",
+                                       "box", "pack", "package", "blister", "bottle", "over",
+                                       "the", "counter", "supplement", "dietary"]
                         words = analysis_lower.split()
                         name_parts = []
                         for w in words:
@@ -252,10 +282,20 @@ def handle_multi_image_query(images_list: list[bytes], user_text: str):
                                 name_parts.append(next_w)
                         drug_name = " ".join(name_parts) if name_parts else analysis.split()[0]
 
-                    # Search the DB with the extracted drug name
-                    # Try the full name first, then just the first word as fallback
+                    # Remove any trailing punctuation from drug_name
+                    drug_name = drug_name.strip(" .,;:-\"'`")
+
+                    # Build search terms with cross-language variations
                     search_terms = [drug_name]
-                    first_word = drug_name.split()[0] if drug_name else ""
+                    if "vitamina" in drug_name.lower():
+                        search_terms.append(drug_name.lower().replace("vitamina", "vitamin"))
+                    elif "vitamin" in drug_name.lower() and "vitamina" not in drug_name.lower():
+                        search_terms.append(drug_name.lower().replace("vitamin", "vitamina"))
+                    # If name has more than 2 words, also try just the first 2
+                    drug_words = drug_name.split()
+                    if len(drug_words) > 2:
+                        search_terms.append(" ".join(drug_words[:2]))
+                    first_word = drug_words[0] if drug_words else ""
                     if first_word and first_word != drug_name:
                         search_terms.append(first_word)
 

@@ -30,7 +30,7 @@ def analyze_image(image_base64: str, user_text: str = "") -> str:
         return None
     if result is None:
         return None
-    return result.strip()
+    return result.strip().strip('"\'`')
 
 
 MULTI_IMAGE_ANALYSIS_PROMPT = """You are a pharmaceutical image recognition assistant.
@@ -171,12 +171,18 @@ def generate_multi_image_recommendation(user_text: str, image_analyses: list[str
     return result.strip()
 
 
-def generate_image_recommendation(user_text: str, image_analysis: str, products_data: list[dict]) -> str:
+def generate_image_recommendation(user_text: str, image_analysis: str, products_data: list[dict], language: str = "en") -> str:
     """Generates a response combining image analysis with product recommendations."""
+    lang_instruction = {
+        "en": "You MUST respond ENTIRELY in English.",
+        "fr": "You MUST respond ENTIRELY in French.",
+        "es": "You MUST respond ENTIRELY in Spanish.",
+    }.get(language, "You MUST respond ENTIRELY in English.")
+
     if products_data:
         products_text = "\n".join(
             f"- {p['name']} | Dosage: {p.get('medication_dosage', 'N/A')} | Form: {p.get('dosage_form', 'N/A')} | "
-            f"Lab: {p.get('laboratory', 'N/A')} | Price: ${p.get('price', 'N/A')} | Stock: {p.get('actual_stock', 'N/A')} units"
+            f"Lab: {p.get('laboratory', 'N/A')} | Price: {p.get('price', 'N/A')} COP | Stock: {p.get('actual_stock', 'N/A')} units"
             for p in products_data
         )
     else:
@@ -184,14 +190,15 @@ def generate_image_recommendation(user_text: str, image_analysis: str, products_
 
     user_message = (
         f"Image analysis result: {image_analysis}\n\n"
-        f"User message (RESPOND IN THIS LANGUAGE): {user_text}\n\n"
-        f"Available matching products in our pharmacy:\n{products_text}"
+        f"User message: {user_text}\n\n"
+        f"Available matching products in our pharmacy:\n{products_text}\n\n"
+        f"LANGUAGE INSTRUCTION: {lang_instruction}"
     )
 
     try:
         result = generate_content(
             contents=user_message,
-            system_prompt=IMAGE_RECOMMENDATION_PROMPT + "\n\n" + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\nThe user's message is: \"{user_text}\". Detect the language of THIS message and respond ENTIRELY in that language.",
+            system_prompt=IMAGE_RECOMMENDATION_PROMPT + "\n\n" + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
             temperature=0.7,
         )
     except Exception as e:

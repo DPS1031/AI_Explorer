@@ -231,7 +231,7 @@ def summarize_query_results(prompt: str, columns: list[str], rows: list[tuple], 
 
     user_message = (
         f"{history_text}"
-        f"User question: {prompt}\n\n"
+        f"User question (RESPOND IN THE SAME LANGUAGE AS THIS QUESTION): {prompt}\n\n"
         f"Query results ({len(rows)} row(s)):\n{data_text}"
     )
 
