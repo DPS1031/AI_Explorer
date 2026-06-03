@@ -1,26 +1,61 @@
-# This file is for REFERENCE only.
-# In AWS, you'll use ECS Task Definitions instead of docker-compose.
-# This shows the production configuration equivalent.
-
 name: AI-explorer-prod
 services:
-  streamlit:
-    build: ./
-    container_name: Streamlit-AI-explorer
-    ports:
-      - "8501:8501"
+  postgres:
+    image: postgres:18
+    container_name: Pharmacy_db
+    restart: unless-stopped
+    networks:
+      - pharmacy-network
     environment:
-      - DATABASE_URL=${DATABASE_URL}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    # NO ports exposed to host - only accessible within Docker network
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  seeder:
+    image: ${ECR_REGISTRY}/ai-explorer/seeder:latest
+    networks:
+      - pharmacy-network
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  streamlit:
+    image: ${ECR_REGISTRY}/ai-explorer/app:latest
+    container_name: Streamlit-AI-explorer
+    restart: unless-stopped
+    ports:
+      - "80:8501"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - AWS_REGION=${AWS_REGION}
       - SES_SENDER_EMAIL=${SES_SENDER_EMAIL}
       - DEBUG=false
-    healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8501/_stcore/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      seeder:
+        condition: service_completed_successfully
+    networks:
+      - pharmacy-network
 
-# NOTE: PostgreSQL runs as AWS RDS (managed service), not as a container.
-# NOTE: Seeder runs as a one-time ECS task after RDS is ready.
+networks:
+  pharmacy-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
