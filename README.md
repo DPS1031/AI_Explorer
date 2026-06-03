@@ -18,11 +18,23 @@ An AI-powered pharmacy assistant that combines natural language understanding wi
 ---
 
 ## 📸 Preview
-
+ 
 <!-- Add your screenshots here -->
-<!-- | Welcome Screen | Chat Interface | -->
-<!-- |---|---| -->
-<!-- | <img width="800" alt="welcome" src="URL" /> | <img width="800" alt="chat" src="URL" /> | -->
+| Welcome Screen | Chat Interface |
+|---|---|
+| `[screenshot-welcome.png]` | `[screenshot-chat.png]` |
+ 
+| SQL Query + Results | Data Visualization |
+|---|---|
+| `[screenshot-sql.png]` | `[screenshot-chart.png]` |
+ 
+| Image Analysis | Order + PDF | 
+|---|---|
+| `[screenshot-vision.png]` | `[screenshot-pdf.png]` |
+ 
+| Conversation History | Email Delivery |
+|---|---|
+| `[screenshot-sidebar.png]` | `[screenshot-email.png]` |
 
 ---
 
