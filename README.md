@@ -11,19 +11,31 @@ An AI-powered pharmacy assistant that combines natural language understanding wi
 
 > 🚀 **Live demo:** [http://44.220.247.80](http://44.220.247.80)
 
-> 🔐 **Credentials:** `david@pharmacy.com` / `123456`
+> 🔐 **Credentials:** `maria@pharmacy.com` / `123456`
 
 > 👤 **Author:** [David Pedroza Sánchez](https://www.linkedin.com/in/david-pedroza-sanchez-9525b0346)
 
 ---
 
 ## 📸 Preview
-
+ 
 <!-- Add your screenshots here -->
-<!-- | Welcome Screen | Chat Interface | -->
-<!-- |---|---| -->
-<!-- | <img width="800" alt="welcome" src="URL" /> | <img width="800" alt="chat" src="URL" /> | -->
-
+| Welcome Screen | Chat Interface |
+|---|---|
+| <img width="1030" height="523" alt="image" src="https://github.com/user-attachments/assets/6c60d374-6769-4872-aa37-f85a3121df37" /> | <img width="840" height="792" alt="Screenshot 2026-06-03 173344" src="https://github.com/user-attachments/assets/02038122-0a1a-4c79-bd31-01de249bc7a8" />|
+ 
+| SQL Query + Results | Data Visualization |
+|---|---|
+| <img width="760" height="395" alt="image" src="https://github.com/user-attachments/assets/7ef7e972-ef74-46d0-a851-d36bf3d14f09" />| <img width="804" height="806" alt="image" src="https://github.com/user-attachments/assets/a2e5054a-1827-4b9b-8894-4585355facc3" /> |
+ 
+| Image Analysis | Order + PDF | 
+|---|---|
+| <img width="830" height="889" alt="image" src="https://github.com/user-attachments/assets/0e7f92ea-e0c8-4f5a-bf6a-9eb53c728851" />| <img width="758" height="579" alt="image" src="https://github.com/user-attachments/assets/da190b57-ee4a-4c4f-bc39-03b720e198e5" />|
+ 
+| Conversation History | Email Delivery |
+|---|---|
+| <img width="301" height="891" alt="image" src="https://github.com/user-attachments/assets/96eed8ee-8693-4333-9166-e5213036434a" /> | <img width="1274" height="758" alt="image" src="https://github.com/user-attachments/assets/8fc205ad-aa15-4b3c-9a1c-738bf4f9bc83" /> |
+ 
 ---
 
 ## ✨ Features
@@ -92,26 +104,26 @@ An AI-powered pharmacy assistant that combines natural language understanding wi
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
-│                    AWS EC2 (t3.small)                          │
-│                    Ubuntu 26.04 LTS                            │
+│                    AWS EC2 (t3.small)                         │
+│                    Ubuntu 26.04 LTS                           │
 │                                                               │
 │  ┌─────────────────────────────────────────────────────────┐  │
-│  │              Docker Compose                              │  │
-│  │                                                          │  │
-│  │  ┌──────────────┐  ┌────────────┐  ┌──────────────┐    │  │
-│  │  │  Streamlit   │  │ PostgreSQL │  │    Seeder    │    │  │
-│  │  │  GPT-4o-mini │  │   :5432    │  │  (run once)  │    │  │
-│  │  │    :80       │──│  pg_trgm   │──│  Faker data  │    │  │
-│  │  └──────────────┘  └────────────┘  └──────────────┘    │  │
-│  │         │                                                │  │
+│  │              Docker Compose                             │  │
+│  │                                                         │  │
+│  │  ┌──────────────┐  ┌────────────┐  ┌──────────────┐     │  │
+│  │  │  Streamlit   │  │ PostgreSQL │  │    Seeder    │     │  │
+│  │  │  GPT-4o-mini │  │   :5432    │  │  (run once)  │     │  │
+│  │  │    :80       │──│  pg_trgm   │──│  Faker data  │     │  │
+│  │  └──────────────┘  └────────────┘  └──────────────┘     │  │
+│  │         │                                               │  │
 │  │         ├── OpenAI API (SQL gen, vision, NLP)           │  │
-│  │         └── AWS SES (invoice emails)                     │  │
+│  │         └── AWS SES (invoice emails)                    │  │
 │  └─────────────────────────────────────────────────────────┘  │
 │                                                               │
 └───────────────────────────────────────────────────────────────┘
          ↑ HTTP :80
          │
-    ┌────┴──────────────────────────────┐
+    ┌────┴───────────────────────────────┐
     │      Amazon ECR (private)          │
     │      ai-explorer/app:latest        │
     │      ai-explorer/seeder:latest     │
@@ -191,9 +203,9 @@ AI_Explorer/
 │  id, name    │     │  id, name    │     │  id, name, email │
 │  description │     │  email       │     │  address, phone  │
 └──────┬───────┘     └──────┬───────┘     └────────┬─────────┘
-       │                     │                      │
-       └─────────┬───────────┘                      │
-                 ▼                                   ▼
+       │                    │                      │
+       └─────────┬──────────┘                      │
+                 ▼                                 ▼
        ┌──────────────────┐              ┌──────────────────┐
        │     products     │              │      orders      │
        │  id, name, price │              │  id, total       │
@@ -210,11 +222,11 @@ AI_Explorer/
        └──────────────────┘
 
        ┌──────────────┐     ┌──────────────────┐     ┌──────────────┐
-       │    users     │────▶│  conversations   │────▶│   messages   │
+       │    users     │────▶│  conversations   │────▶│   messages  |
        │  id, name    │     │  id, title       │     │  sender      │
        │  email       │     │  user_id         │     │  content     │
        │  password    │     └──────────────────┘     │  images      │
-       └──────────────┘                               └──────────────┘
+       └──────────────┘                              └──────────────┘
 ```
 
 12 tables total: `categories`, `suppliers`, `customers`, `products`, `product_images`, `inventory`, `orders`, `order_items`, `order_status_history`, `users`, `conversations`, `messages`
