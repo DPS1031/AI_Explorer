@@ -11,7 +11,7 @@ An AI-powered pharmacy assistant that combines natural language understanding wi
 
 > 🚀 **Live demo:** [http://44.220.247.80](http://44.220.247.80)
 
-> 🔐 **Credentials:** `david@pharmacy.com` / `123456`
+> 🔐 **Credentials:** `maria@pharmacy.com` / `123456`
 
 > 👤 **Author:** [David Pedroza Sánchez](https://www.linkedin.com/in/david-pedroza-sanchez-9525b0346)
 
