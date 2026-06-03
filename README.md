@@ -26,7 +26,7 @@ An AI-powered pharmacy assistant that combines natural language understanding wi
  
 | SQL Query + Results | Data Visualization |
 |---|---|
-| <img width="760" height="395" alt="image" src="https://github.com/user-attachments/assets/7ef7e972-ef74-46d0-a851-d36bf3d14f09" />| <img width="756" height="412" alt="image" src="https://github.com/user-attachments/assets/16bae06b-9dca-4a35-8f86-695e3b2f73dd" />|
+| <img width="760" height="395" alt="image" src="https://github.com/user-attachments/assets/7ef7e972-ef74-46d0-a851-d36bf3d14f09" />| <img width="804" height="806" alt="image" src="https://github.com/user-attachments/assets/a2e5054a-1827-4b9b-8894-4585355facc3" /> |
  
 | Image Analysis | Order + PDF | 
 |---|---|
