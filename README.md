@@ -191,9 +191,9 @@ AI_Explorer/
 │  id, name    │     │  id, name    │     │  id, name, email │
 │  description │     │  email       │     │  address, phone  │
 └──────┬───────┘     └──────┬───────┘     └────────┬─────────┘
-       │                     │                      │
-       └─────────┬───────────┘                      │
-                 ▼                                   ▼
+       │                    │                     │
+       └─────────┬──────────┘                     │
+                 ▼                                 ▼
        ┌──────────────────┐              ┌──────────────────┐
        │     products     │              │      orders      │
        │  id, name, price │              │  id, total       │
