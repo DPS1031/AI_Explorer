@@ -3,7 +3,7 @@ psycopg2-binary==2.9.12
 openai==2.38.0
 fpdf2==2.8.3
 boto3==1.42.97
-python-dotenv==1.2.1
+python-dotenv==1.2.2
 Faker==40.15.0
 plotly==6.7.0
 extra-streamlit-components==0.1.81
