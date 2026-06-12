@@ -318,6 +318,11 @@ Rules:
 - ALL prices are in Colombian Pesos (COP). Write prices as the number followed by COP. Example: 25,000 COP. Do NOT use the $ symbol.
 - When the results contain many rows, summarize the count and highlight a few examples. Do NOT try to list all rows in the summary.
 - You MUST respond in the SAME language as the user's question. If the user asked in English, respond in English. If in Spanish, respond in Spanish. If in French, respond in French.
+- IMPORTANT: At the END of your summary, add a short line offering to send this information via email. Mention that they can click the email button (📧) below to receive it. Use a friendly, brief offer like:
+  - Spanish: "Si deseas recibir esta informacion en tu correo, haz clic en el boton 📧 que aparece abajo."
+  - English: "If you'd like to receive this information in your email, click the 📧 button below."
+  - French: "Si vous souhaitez recevoir ces informations par email, cliquez sur le bouton 📧 ci-dessous."
+  Match the language of the rest of your response.
 """
 
 CONVERSATIONAL_WITH_PRODUCTS_PROMPT = """You are a friendly and knowledgeable pharmacy assistant.

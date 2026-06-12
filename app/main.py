@@ -12,6 +12,7 @@ from app.chat_handlers import (
     process_user_input,
     handle_image_query,
     handle_multi_image_query,
+    handle_send_report_email,
 )
 
 # --- Page Config ---
@@ -86,6 +87,13 @@ def main():
 
     if "multi_order_pending_options" not in st.session_state:
         st.session_state.multi_order_pending_options = None  # list of products that need user selection
+
+    # Report email flow states
+    if "last_report_data" not in st.session_state:
+        st.session_state.last_report_data = None  # stores last chart/table data for email sending
+
+    if "report_email_flow" not in st.session_state:
+        st.session_state.report_email_flow = False  # True when user wants to send a report by email
 
     # --- Session persistence via cookies ---
     cookie_manager = stx.CookieManager(key="cookie_manager")
@@ -222,12 +230,269 @@ def main():
             process_user_input(prompt)
             st.rerun()
 
+    # --- Handle report email flow ---
+    if st.session_state.get("report_email_flow"):
+        _handle_report_email_dialog()
+
+    # --- Handle order data collection via form dialog ---
+    if st.session_state.get("order_flow") in ("awaiting_data", "multi_awaiting_data"):
+        _handle_order_data_form_dialog()
+
     # --- Process inputs captured from the welcome screen (Suggestions or Central Input) ---
     if st.session_state.input_to_process:
         prompt_to_run = st.session_state.input_to_process
         st.session_state.input_to_process = None  # Clear buffer
         process_user_input(prompt_to_run)
         st.rerun()
+
+
+@st.dialog("📧")
+def _handle_report_email_dialog():
+    """Shows a dialog to capture the email address and send the report."""
+    # Use language stored in last_report_data (set at the time the button was clicked)
+    report_data = st.session_state.get("last_report_data") or {}
+    language = report_data.get("language", "es")
+
+    labels = {
+        "es": {
+            "instruction": "Ingresa el correo electronico donde deseas recibir el reporte:",
+            "placeholder": "tu@email.com",
+            "send": "Enviar reporte",
+            "cancel": "Cancelar",
+            "invalid": "Por favor ingresa un correo electronico valido.",
+        },
+        "en": {
+            "instruction": "Enter the email address where you want to receive the report:",
+            "placeholder": "your@email.com",
+            "send": "Send report",
+            "cancel": "Cancel",
+            "invalid": "Please enter a valid email address.",
+        },
+        "fr": {
+            "instruction": "Entrez l'adresse email ou vous souhaitez recevoir le rapport:",
+            "placeholder": "votre@email.com",
+            "send": "Envoyer le rapport",
+            "cancel": "Annuler",
+            "invalid": "Veuillez entrer une adresse email valide.",
+        },
+    }
+    t = labels.get(language, labels["es"])
+
+    st.write(t["instruction"])
+
+    # Pre-fill with user's email if logged in
+    default_email = ""
+    if st.session_state.user:
+        default_email = st.session_state.user.get("email", "")
+
+    email = st.text_input(
+        "Email",
+        value=default_email,
+        placeholder=t["placeholder"],
+        label_visibility="collapsed",
+        key="report_email_input",
+    )
+
+    col_send, col_cancel = st.columns(2)
+    with col_send:
+        if st.button(t["send"], type="primary", use_container_width=True, key="report_send_btn"):
+            if email and "@" in email and "." in email:
+                handle_send_report_email(email)
+                st.session_state.report_email_flow = False
+                st.rerun()
+            else:
+                st.error(t["invalid"])
+    with col_cancel:
+        if st.button(t["cancel"], use_container_width=True, key="report_cancel_btn"):
+            st.session_state.report_email_flow = False
+            st.rerun()
+
+
+@st.dialog("🧾")
+def _handle_order_data_form_dialog():
+    """Shows a form dialog to collect customer data for an order."""
+    from app.ui_components import _detect_conversation_language
+    from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+    from app.services.auth_service import save_message
+
+    language = _detect_conversation_language()
+
+    labels = {
+        "es": {
+            "title": "Datos para la factura",
+            "name": "Nombre completo",
+            "doc_type": "Tipo de documento",
+            "doc_number": "Numero de documento",
+            "email": "Correo electronico",
+            "address": "Direccion completa",
+            "city": "Ciudad",
+            "phone": "Celular / Telefono",
+            "submit": "Enviar datos",
+            "cancel": "Cancelar pedido",
+            "doc_options": ["Cedula de Ciudadania", "Cedula de Extranjeria", "Pasaporte"],
+            "required": "Todos los campos son obligatorios.",
+        },
+        "en": {
+            "title": "Invoice information",
+            "name": "Full name",
+            "doc_type": "Document type",
+            "doc_number": "Document number",
+            "email": "Email address",
+            "address": "Full address",
+            "city": "City",
+            "phone": "Phone number",
+            "submit": "Submit",
+            "cancel": "Cancel order",
+            "doc_options": ["National ID", "Foreign ID", "Passport"],
+            "required": "All fields are required.",
+        },
+        "fr": {
+            "title": "Informations pour la facture",
+            "name": "Nom complet",
+            "doc_type": "Type de document",
+            "doc_number": "Numero de document",
+            "email": "Adresse email",
+            "address": "Adresse complete",
+            "city": "Ville",
+            "phone": "Telephone",
+            "submit": "Envoyer",
+            "cancel": "Annuler la commande",
+            "doc_options": ["Carte d'identite", "Carte de sejour", "Passeport"],
+            "required": "Tous les champs sont obligatoires.",
+        },
+    }
+    t = labels.get(language, labels["es"])
+
+    st.subheader(t["title"])
+
+    # Pre-fill email if user is logged in
+    default_email = ""
+    if st.session_state.user:
+        default_email = st.session_state.user.get("email", "")
+
+    nombre = st.text_input(t["name"], key="order_form_name")
+    tipo_documento = st.selectbox(t["doc_type"], options=t["doc_options"], key="order_form_doc_type")
+    cedula = st.text_input(t["doc_number"], key="order_form_doc_number")
+    correo = st.text_input(t["email"], value=default_email, key="order_form_email")
+    direccion = st.text_input(t["address"], key="order_form_address")
+    ciudad = st.text_input(t["city"], key="order_form_city")
+    celular = st.text_input(t["phone"], key="order_form_phone")
+
+    col_submit, col_cancel = st.columns(2)
+    with col_submit:
+        if st.button(t["submit"], type="primary", use_container_width=True, key="order_form_submit_btn"):
+            # Validate all fields
+            if not all([nombre.strip(), cedula.strip(), correo.strip(), direccion.strip(), ciudad.strip(), celular.strip()]):
+                st.error(t["required"])
+            elif "@" not in correo or "." not in correo:
+                st.error(t["required"])
+            else:
+                # Save customer data and advance to confirmation
+                customer_data = {
+                    "nombre": nombre.strip(),
+                    "tipo_documento": tipo_documento,
+                    "cedula": cedula.strip(),
+                    "correo": correo.strip(),
+                    "direccion": direccion.strip(),
+                    "ciudad": ciudad.strip(),
+                    "celular": celular.strip(),
+                }
+                st.session_state.order_customer_data = customer_data
+
+                # Determine if single or multi order
+                is_multi = st.session_state.get("order_flow") == "multi_awaiting_data"
+
+                if is_multi:
+                    st.session_state.order_flow = "multi_awaiting_confirmation"
+                    products = st.session_state.multi_order_products
+                    total = sum(float(p["price"]) * p["quantity"] for p in products)
+                    products_summary = "\n".join(
+                        f"- {p['name']} ({p.get('laboratory', 'N/A')}) x{p['quantity']} - {float(p['price']) * p['quantity']:,.2f} COP"
+                        for p in products
+                    )
+                else:
+                    st.session_state.order_flow = "awaiting_confirmation"
+                    order_product = st.session_state.order_product
+                    total = order_product["price"] * order_product["quantity"]
+                    products_summary = f"- {order_product['product']} ({order_product.get('laboratory', 'N/A')}) x{order_product['quantity']} - {total:,.2f} COP"
+
+                # Generate confirmation message via AI
+                lang_instruction = {
+                    "en": "You MUST respond ENTIRELY in English.",
+                    "fr": "You MUST respond ENTIRELY in French.",
+                    "es": "You MUST respond ENTIRELY in Spanish.",
+                }.get(language, "You MUST respond ENTIRELY in Spanish.")
+
+                try:
+                    msg = generate_content(
+                        contents=(
+                            f"Customer data received:\n"
+                            f"- Name: {customer_data['nombre']}\n"
+                            f"- Document: {customer_data['tipo_documento']} {customer_data['cedula']}\n"
+                            f"- Email: {customer_data['correo']}\n"
+                            f"- Address: {customer_data['direccion']}, {customer_data['ciudad']}\n"
+                            f"- Phone: {customer_data['celular']}\n\n"
+                            f"Products:\n{products_summary}\n"
+                            f"Total: {total:,.2f} COP\n\n"
+                            f"Present all this data to the customer and ask if everything is correct. "
+                            f"If correct they should confirm, if not they can correct it.\n"
+                            f"LANGUAGE INSTRUCTION: {lang_instruction}"
+                        ),
+                        system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
+                        temperature=0.7,
+                    )
+                    response = msg.strip() if msg else "Please confirm your data is correct."
+                except Exception:
+                    response = (
+                        f"Data received:\n"
+                        f"Name: {customer_data['nombre']}\n"
+                        f"Document: {customer_data['tipo_documento']} {customer_data['cedula']}\n"
+                        f"Email: {customer_data['correo']}\n"
+                        f"Address: {customer_data['direccion']}, {customer_data['ciudad']}\n"
+                        f"Phone: {customer_data['celular']}\n"
+                        f"Total: {total:,.2f} COP\n\n"
+                        f"Is this correct?"
+                    )
+
+                from app.ui_components import sanitize_response
+                response = sanitize_response(response)
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                if st.session_state.user and st.session_state.current_conversation_id:
+                    save_message(st.session_state.current_conversation_id, "assistant", response)
+                st.rerun()
+
+    with col_cancel:
+        if st.button(t["cancel"], use_container_width=True, key="order_form_cancel_btn"):
+            # Cancel the order
+            st.session_state.order_flow = None
+            st.session_state.order_product = None
+            st.session_state.order_product_options = None
+            st.session_state.multi_order_products = None
+            st.session_state.multi_order_pending_options = None
+            st.session_state.order_customer_data = None
+
+            lang_instruction = {
+                "en": "You MUST respond ENTIRELY in English.",
+                "fr": "You MUST respond ENTIRELY in French.",
+                "es": "You MUST respond ENTIRELY in Spanish.",
+            }.get(language, "You MUST respond ENTIRELY in Spanish.")
+
+            try:
+                msg = generate_content(
+                    contents=f"The customer cancelled their order. Acknowledge politely.\nLANGUAGE INSTRUCTION: {lang_instruction}",
+                    system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
+                    temperature=0.7,
+                )
+                response = msg.strip() if msg else "Order cancelled."
+            except Exception:
+                response = "Order cancelled. Let me know if you need anything else."
+
+            from app.ui_components import sanitize_response
+            response = sanitize_response(response)
+            st.session_state.messages.append({"role": "assistant", "content": response})
+            if st.session_state.user and st.session_state.current_conversation_id:
+                save_message(st.session_state.current_conversation_id, "assistant", response)
+            st.rerun()
 
 
 if __name__ == "__main__":

@@ -578,18 +578,14 @@ def handle_multi_order_data_confirmation(prompt: str):
 
     if confirmation == "DATA_NOT_CONFIRMED":
         st.session_state.order_flow = "multi_awaiting_data"
-        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
+        st.session_state.order_customer_data = None
         language = _detect_conversation_language()
-        lang_instruction = {"en": "You MUST respond ENTIRELY in English.", "fr": "You MUST respond ENTIRELY in French.", "es": "You MUST respond ENTIRELY in Spanish."}.get(language, "You MUST respond ENTIRELY in Spanish.")
-        try:
-            fallback = generate_content(
-                contents=f"The customer said their data is NOT correct. Ask them to send corrected data.\nLANGUAGE INSTRUCTION: {lang_instruction}",
-                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
-                temperature=0.7,
-            )
-            response = sanitize_response(fallback.strip()) if fallback else "Please send your corrected data."
-        except Exception:
-            response = "Please send your corrected data (name, document type, document number, email, address, city, phone)."
+        form_msgs = {
+            "es": "Entendido. Por favor corrige tus datos en el formulario que aparecera nuevamente.",
+            "en": "Understood. Please correct your data in the form that will appear again.",
+            "fr": "Compris. Veuillez corriger vos donnees dans le formulaire qui reapparaitra.",
+        }
+        response = form_msgs.get(language, form_msgs["es"])
         with st.chat_message("assistant"):
             st.markdown(response)
         st.session_state.messages.append({"role": "assistant", "content": response})

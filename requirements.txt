@@ -6,4 +6,5 @@ boto3==1.42.97
 python-dotenv==1.2.2
 Faker==40.15.0
 plotly==6.7.0
+kaleido==0.2.1
 extra-streamlit-components==0.1.81

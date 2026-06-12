@@ -43,25 +43,13 @@ def handle_order_confirmed(prompt: str):
             # All products confirmed — go to data collection
             st.session_state.order_flow = "multi_awaiting_data"
             language = _detect_conversation_language()
-            from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
-            lang_instruction = {"en": "You MUST respond ENTIRELY in English.", "fr": "You MUST respond ENTIRELY in French.", "es": "You MUST respond ENTIRELY in Spanish."}.get(language, "You MUST respond ENTIRELY in Spanish.")
             total = sum(float(p["price"]) * p["quantity"] for p in products_found)
-            products_summary = "\n".join(f"- {p['name']} ({p.get('laboratory', '')}) x{p['quantity']} = {float(p['price']) * p['quantity']:,.2f} COP" for p in products_found)
-            try:
-                msg = generate_content(
-                    contents=(
-                        f"The customer confirmed they want to order these products (identified from images):\n{products_summary}\n"
-                        f"Grand Total: {total:,.2f} COP\n\n"
-                        f"Now ask the customer for their personal data to generate the invoice "
-                        f"(full name, document type, document number, email, address, city, phone).\n"
-                        f"LANGUAGE INSTRUCTION: {lang_instruction}"
-                    ),
-                    system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
-                    temperature=0.7,
-                )
-                response = sanitize_response(msg.strip()) if msg else "All products confirmed. Please provide your personal data."
-            except Exception:
-                response = f"Order confirmed. Total: {total:,.2f} COP. Please provide your personal data."
+            form_msgs = {
+                "es": f"Todos los productos confirmados. Total: {total:,.2f} COP. Por favor completa el formulario con tus datos para generar la factura.",
+                "en": f"All products confirmed. Total: {total:,.2f} COP. Please fill out the form with your details to generate the invoice.",
+                "fr": f"Tous les produits confirmes. Total: {total:,.2f} COP. Veuillez remplir le formulaire avec vos coordonnees pour generer la facture.",
+            }
+            response = form_msgs.get(language, form_msgs["es"])
 
         with st.chat_message("assistant"):
             st.markdown(response)
@@ -241,9 +229,12 @@ def handle_order_confirmed(prompt: str):
         st.session_state.order_flow = "awaiting_data"
 
         language = _detect_conversation_language()
-        response = sanitize_response(
-            generate_data_collection_message(selected["name"], quantity, prompt, history=history, language=language)
-        )
+        form_msgs = {
+            "es": f"Perfecto, has seleccionado {selected['name']} ({selected.get('laboratory', 'N/A')}) x{quantity}. Por favor completa el formulario con tus datos para generar la factura.",
+            "en": f"Great, you selected {selected['name']} ({selected.get('laboratory', 'N/A')}) x{quantity}. Please fill out the form with your details to generate the invoice.",
+            "fr": f"Parfait, vous avez choisi {selected['name']} ({selected.get('laboratory', 'N/A')}) x{quantity}. Veuillez remplir le formulaire avec vos coordonnees pour generer la facture.",
+        }
+        response = form_msgs.get(language, form_msgs["es"])
 
         with st.chat_message("assistant"):
             st.markdown(response)
@@ -303,29 +294,15 @@ def handle_order_product_selection(prompt: str):
             st.session_state.multi_order_pending_options = []
             st.session_state.order_flow = "multi_awaiting_data"
 
-            # Ask for personal data
+            # Tell user to fill the form
             language = _detect_conversation_language()
-            from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
-            lang_instruction = {"en": "You MUST respond ENTIRELY in English.", "fr": "You MUST respond ENTIRELY in French.", "es": "You MUST respond ENTIRELY in Spanish."}.get(language, "You MUST respond ENTIRELY in Spanish.")
-
             total = sum(float(p["price"]) * p["quantity"] for p in all_products)
-            products_summary = "\n".join(f"- {p['name']} ({p.get('laboratory', '')}) x{p['quantity']} = {float(p['price']) * p['quantity']:,.2f} COP" for p in all_products)
-
-            try:
-                msg = generate_content(
-                    contents=(
-                        f"The customer wants to order ALL options shown:\n{products_summary}\n"
-                        f"Grand Total: {total:,.2f} COP\n\n"
-                        f"Now ask the customer for their personal data to generate the invoice "
-                        f"(full name, document type, document number, email, address, city, phone).\n"
-                        f"LANGUAGE INSTRUCTION: {lang_instruction}"
-                    ),
-                    system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION + f"\n\n{lang_instruction}",
-                    temperature=0.7,
-                )
-                response = sanitize_response(msg.strip()) if msg else "All products confirmed. Please provide your personal data."
-            except Exception:
-                response = f"Order confirmed. Total: {total:,.2f} COP. Please provide your personal data."
+            form_msgs = {
+                "es": f"Todos los productos confirmados. Total: {total:,.2f} COP. Por favor completa el formulario con tus datos para generar la factura.",
+                "en": f"All products confirmed. Total: {total:,.2f} COP. Please fill out the form with your details to generate the invoice.",
+                "fr": f"Tous les produits confirmes. Total: {total:,.2f} COP. Veuillez remplir le formulaire avec vos coordonnees pour generer la facture.",
+            }
+            response = form_msgs.get(language, form_msgs["es"])
 
             with st.chat_message("assistant"):
                 st.markdown(response)
@@ -462,11 +439,14 @@ def handle_order_product_selection(prompt: str):
     st.session_state.order_product_options = None
     st.session_state.order_flow = "awaiting_data"
 
-    # Ask for customer data
+    # Tell user to fill the form
     language = _detect_conversation_language()
-    response = sanitize_response(
-        generate_data_collection_message(selected["name"], quantity, prompt, history=history, language=language)
-    )
+    form_msgs = {
+        "es": f"Perfecto, has seleccionado {selected['name']} ({selected.get('laboratory', 'N/A')}) x{quantity}. Por favor completa el formulario con tus datos para generar la factura.",
+        "en": f"Great, you selected {selected['name']} ({selected.get('laboratory', 'N/A')}) x{quantity}. Please fill out the form with your details to generate the invoice.",
+        "fr": f"Parfait, vous avez choisi {selected['name']} ({selected.get('laboratory', 'N/A')}) x{quantity}. Veuillez remplir le formulaire avec vos coordonnees pour generer la facture.",
+    }
+    response = form_msgs.get(language, form_msgs["es"])
 
     with st.chat_message("assistant"):
         st.markdown(response)
@@ -635,30 +615,16 @@ def handle_order_data_confirmation(prompt: str):
     confirmation = classify_data_confirmation(prompt)
 
     if confirmation == "DATA_NOT_CONFIRMED":
-        # Reset to awaiting_data so they can provide corrected info
+        # Reset to awaiting_data so the form re-opens for correction
         st.session_state.order_flow = "awaiting_data"
-        from app.services.ai_service import generate_content, RESPONSE_LANGUAGE_INSTRUCTION
-        try:
-            fallback = generate_content(
-                contents=(
-                    f"The customer said their data is NOT correct. Their message: \"{prompt}\"\n"
-                    f"Ask them to send all their corrected data again (name, document type, document number, email, address, city, phone).\n"
-                    f"Respond in the same language as the customer's message."
-                ),
-                system_prompt="You are a friendly pharmacy assistant. Respond in plain text, no markdown. " + RESPONSE_LANGUAGE_INSTRUCTION,
-                temperature=0.7,
-            )
-            response = sanitize_response(fallback.strip()) if fallback else sanitize_response(
-                "Understood. Please send me all your corrected data again:\n\n"
-                "1. Full name\n2. Document type (CC, CE, Passport)\n3. Document number\n"
-                "4. Email\n5. Full address\n6. City\n7. Phone number"
-            )
-        except Exception:
-            response = sanitize_response(
-                "Understood. Please send me all your corrected data again:\n\n"
-                "1. Full name\n2. Document type (CC, CE, Passport)\n3. Document number\n"
-                "4. Email\n5. Full address\n6. City\n7. Phone number"
-            )
+        st.session_state.order_customer_data = None
+        language = _detect_conversation_language()
+        form_msgs = {
+            "es": "Entendido. Por favor corrige tus datos en el formulario que aparecera nuevamente.",
+            "en": "Understood. Please correct your data in the form that will appear again.",
+            "fr": "Compris. Veuillez corriger vos donnees dans le formulaire qui reapparaitra.",
+        }
+        response = form_msgs.get(language, form_msgs["es"])
         with st.chat_message("assistant"):
             st.markdown(response)
         st.session_state.messages.append({"role": "assistant", "content": response})

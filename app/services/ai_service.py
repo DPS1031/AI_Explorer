@@ -208,7 +208,7 @@ def classify_chart_type(prompt: str) -> str:
     return result
 
 
-def summarize_query_results(prompt: str, columns: list[str], rows: list[tuple], history: list[dict] | None = None) -> str:
+def summarize_query_results(prompt: str, columns: list[str], rows: list[tuple], history: list[dict] | None = None, language: str | None = None) -> str:
     """Generates a natural language summary of the query results."""
     # Format the data as a readable table for the AI
     if not rows:
@@ -229,10 +229,21 @@ def summarize_query_results(prompt: str, columns: list[str], rows: list[tuple], 
             history_lines.append(f"{role}: {msg['content'][:200]}")
         history_text = "Recent conversation (use this to detect the customer's language):\n" + "\n".join(history_lines) + "\n\n"
 
+    # Explicit language instruction if provided
+    lang_instruction = ""
+    if language:
+        lang_map = {
+            "en": "You MUST respond ENTIRELY in English. Do NOT use Spanish or French.",
+            "fr": "You MUST respond ENTIRELY in French. Do NOT use Spanish or English.",
+            "es": "You MUST respond ENTIRELY in Spanish. Do NOT use English or French.",
+        }
+        lang_instruction = f"\n\nCRITICAL LANGUAGE OVERRIDE: {lang_map.get(language, lang_map['en'])}"
+
     user_message = (
         f"{history_text}"
         f"User question (RESPOND IN THE SAME LANGUAGE AS THIS QUESTION): {prompt}\n\n"
         f"Query results ({len(rows)} row(s)):\n{data_text}"
+        f"{lang_instruction}"
     )
 
     try:

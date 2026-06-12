@@ -25,6 +25,8 @@ from app.services.auth_service import (
     update_conversation_title,
     save_message,
 )
+from app.services.report_pdf_service import generate_report_pdf
+from app.services.report_email_service import send_report_email
 from app.ui_components import render_chart, sanitize_response, _detect_conversation_language
 
 
@@ -522,7 +524,7 @@ def handle_database_query(prompt: str):
             use_container_width=True,
         )
 
-        response_text = sanitize_response(summarize_query_results(prompt, columns, rows, history=st.session_state.messages[-4:]))
+        response_text = sanitize_response(summarize_query_results(prompt, columns, rows, history=st.session_state.messages[-4:], language=_detect_conversation_language()))
     else:
         if not response_text:
             response_text = "No results found for your query."
@@ -534,11 +536,24 @@ def handle_database_query(prompt: str):
             "content": response_text,
             "sql": sql if rows else None,
             "chart_type": chart_type if rows else None,
+            "offer_email": True if (rows and (chart_type != "NONE" or len(rows) > 1)) else False,
         }
     )
     st.session_state.last_results = (
         {"columns": columns, "rows": rows, "chart_type": chart_type} if rows else None
     )
+
+    # Store report data for potential email sending
+    if rows:
+        st.session_state.last_report_data = {
+            "query": prompt,
+            "summary": response_text,
+            "columns": columns,
+            "rows": rows,
+            "chart_type": chart_type,
+            "sql": sql,
+            "language": _detect_conversation_language(),
+        }
 
     # Persist response in DB (save SQL|||chart_type in the images field for re-execution)
     if st.session_state.user and st.session_state.current_conversation_id:
@@ -575,9 +590,45 @@ def process_user_input(prompt: str):
         handle_order_product_selection(prompt)
         return
 
-    if st.session_state.order_flow == "awaiting_data":
-        from app.order_handlers import handle_order_data_received
-        handle_order_data_received(prompt)
+    if st.session_state.order_flow == "awaiting_data" or st.session_state.order_flow == "multi_awaiting_data":
+        # Data collection is now handled by the form dialog in main.py.
+        # If user types something while the form is open, check if it's a cancellation.
+        cancel_indicators = ["cancelar", "cancel", "no quiero", "nevermind", "no thanks", "no gracias", "dejalo", "olvidalo", "forget it", "ya no"]
+        if any(indicator in prompt.lower() for indicator in cancel_indicators):
+            st.session_state.order_flow = None
+            st.session_state.order_product = None
+            st.session_state.order_product_options = None
+            st.session_state.multi_order_products = None
+            st.session_state.multi_order_pending_options = None
+            st.session_state.order_customer_data = None
+            from app.ui_components import _detect_conversation_language as _detect_lang
+            language = _detect_lang()
+            cancel_msgs = {
+                "es": "Pedido cancelado. Si necesitas algo mas, no dudes en preguntar.",
+                "en": "Order cancelled. Let me know if you need anything else.",
+                "fr": "Commande annulee. N'hesitez pas si vous avez besoin d'autre chose.",
+            }
+            response = cancel_msgs.get(language, cancel_msgs["es"])
+            with st.chat_message("assistant"):
+                st.markdown(response)
+            st.session_state.messages.append({"role": "assistant", "content": response})
+            if st.session_state.user and st.session_state.current_conversation_id:
+                save_message(st.session_state.current_conversation_id, "assistant", response)
+        else:
+            # Not a cancel — remind user to fill the form (form will re-open on rerun)
+            from app.ui_components import _detect_conversation_language as _detect_lang
+            language = _detect_lang()
+            reminder_msgs = {
+                "es": "Por favor completa el formulario que aparece en pantalla para continuar con tu pedido.",
+                "en": "Please fill out the form on screen to continue with your order.",
+                "fr": "Veuillez remplir le formulaire a l'ecran pour continuer votre commande.",
+            }
+            response = reminder_msgs.get(language, reminder_msgs["es"])
+            with st.chat_message("assistant"):
+                st.markdown(response)
+            st.session_state.messages.append({"role": "assistant", "content": response})
+            if st.session_state.user and st.session_state.current_conversation_id:
+                save_message(st.session_state.current_conversation_id, "assistant", response)
         return
 
     if st.session_state.order_flow == "awaiting_confirmation":
@@ -588,11 +639,6 @@ def process_user_input(prompt: str):
     if st.session_state.order_flow == "multi_awaiting_selection":
         from app.multi_order_handlers import handle_multi_order_selection
         handle_multi_order_selection(prompt)
-        return
-
-    if st.session_state.order_flow == "multi_awaiting_data":
-        from app.multi_order_handlers import handle_multi_order_data_received
-        handle_multi_order_data_received(prompt)
         return
 
     if st.session_state.order_flow == "multi_awaiting_confirmation":
@@ -633,4 +679,182 @@ def process_user_input(prompt: str):
         update_conversation_title(st.session_state.current_conversation_id, title)
 
 
+def handle_send_report_email(email: str):
+    """Generates a report PDF from the last query results and sends it via email."""
+    import uuid as _uuid
 
+    report_data = st.session_state.get("last_report_data")
+    if not report_data:
+        return
+
+    language = report_data.get("language", _detect_conversation_language())
+    query = report_data["query"]
+    summary = report_data["summary"]
+    columns = report_data["columns"]
+    rows = report_data["rows"]
+    chart_type = report_data["chart_type"]
+
+    # Generate chart image if applicable
+    chart_image_bytes = None
+    if chart_type != "NONE" and rows and columns:
+        chart_image_bytes = _generate_chart_image(columns, rows, chart_type)
+
+    # Generate the PDF
+    pdf_bytes = generate_report_pdf(
+        user_query=query,
+        summary_text=summary,
+        columns=columns,
+        rows=rows,
+        chart_image_bytes=chart_image_bytes,
+        language=language,
+    )
+
+    # Determine recipient name
+    recipient_name = "User"
+    if st.session_state.user:
+        recipient_name = st.session_state.user.get("name", "User")
+
+    # Send the email
+    result = send_report_email(
+        recipient_email=email,
+        recipient_name=recipient_name,
+        pdf_bytes=pdf_bytes,
+        pdf_filename=f"reporte_{_uuid.uuid4().hex[:8]}.pdf",
+        report_summary={
+            "query": query,
+            "summary": summary,
+            "row_count": len(rows),
+            "chart_type": chart_type,
+        },
+        language=language,
+    )
+
+    # Add result message to chat history
+    if result["success"]:
+        success_messages = {
+            "es": f"Reporte enviado exitosamente a {email}",
+            "en": f"Report sent successfully to {email}",
+            "fr": f"Rapport envoye avec succes a {email}",
+        }
+        msg = success_messages.get(language, success_messages["es"])
+        st.session_state.messages.append({"role": "assistant", "content": msg})
+        if st.session_state.user and st.session_state.current_conversation_id:
+            save_message(st.session_state.current_conversation_id, "assistant", msg)
+    else:
+        error_messages = {
+            "es": f"Error al enviar el reporte: {result.get('error', 'Unknown error')}",
+            "en": f"Error sending report: {result.get('error', 'Unknown error')}",
+            "fr": f"Erreur lors de l'envoi du rapport: {result.get('error', 'Unknown error')}",
+        }
+        msg = error_messages.get(language, error_messages["es"])
+        st.session_state.messages.append({"role": "assistant", "content": msg})
+
+    # Reset the flow
+    st.session_state.report_email_flow = False
+
+
+def _generate_chart_image(columns: list[str], rows: list[tuple], chart_type: str) -> bytes | None:
+    """Generates a chart image as PNG bytes using plotly/kaleido for embedding in the PDF."""
+    try:
+        import plotly.express as px
+        import plotly.io as pio
+
+        df = pd.DataFrame(rows, columns=columns)
+
+        if df.empty or len(df.columns) < 2:
+            return None
+
+        # Convert Decimal columns to float
+        for col in df.columns:
+            if df[col].dtype == "object":
+                try:
+                    df[col] = pd.to_numeric(df[col])
+                except (ValueError, TypeError):
+                    pass
+
+        # --- Same intelligent column selection as render_chart ---
+        skip_as_value = set()
+        for col in df.columns:
+            col_lower = col.lower()
+            if col_lower in ("id", "products_id", "orders_id", "customers_id", "supplier_id", "category_id"):
+                skip_as_value.add(col)
+            elif col_lower.endswith("_id") or col_lower == "id":
+                skip_as_value.add(col)
+
+        # Find label column
+        label_col = None
+        label_priority = ["name", "product", "producto", "category", "status", "order_state", "laboratory", "supplier"]
+        for preferred in label_priority:
+            for col in df.columns:
+                if col.lower() == preferred:
+                    label_col = col
+                    break
+            if label_col:
+                break
+        if label_col is None:
+            for col in df.columns:
+                if df[col].dtype == "object":
+                    avg_len = df[col].astype(str).str.len().mean()
+                    if avg_len < 50:
+                        label_col = col
+                        break
+        if label_col is None:
+            label_col = df.columns[0]
+
+        # Find value column
+        value_col = None
+        value_priority = ["total_sold", "total_quantity", "quantity", "total", "revenue", "sales",
+                          "count", "actual_stock", "stock", "total_sales", "units_sold", "sum"]
+        for preferred in value_priority:
+            for col in df.columns:
+                if col.lower() == preferred and pd.api.types.is_numeric_dtype(df[col]):
+                    value_col = col
+                    break
+            if value_col:
+                break
+        if value_col is None:
+            for col in df.columns:
+                if col.lower() == "price" and pd.api.types.is_numeric_dtype(df[col]):
+                    value_col = col
+                    break
+        if value_col is None:
+            for col in df.columns:
+                if col == label_col or col in skip_as_value:
+                    continue
+                if pd.api.types.is_numeric_dtype(df[col]):
+                    value_col = col
+                    break
+        if value_col is None:
+            value_col = df.columns[1] if len(df.columns) > 1 else df.columns[0]
+
+        chart_df = df[[label_col, value_col]].copy()
+        chart_df[label_col] = chart_df[label_col].astype(str)
+
+        if chart_type == "BAR":
+            fig = px.bar(chart_df, x=label_col, y=value_col)
+            fig.update_layout(xaxis={'categoryorder': 'array', 'categoryarray': chart_df[label_col].tolist()})
+        elif chart_type == "LINE":
+            fig = px.line(chart_df, x=label_col, y=value_col)
+        elif chart_type == "PIE":
+            fig = px.pie(chart_df, names=label_col, values=value_col)
+        else:
+            return None
+
+        # Style the chart
+        fig.update_layout(
+            template="plotly_white",
+            title_font_size=14,
+            width=800,
+            height=450,
+        )
+
+        # Export to PNG bytes
+        img_bytes = pio.to_image(fig, format="png", scale=2)
+        return img_bytes
+
+    except ImportError:
+        print("[_generate_chart_image] plotly or kaleido not available for image export")
+        return None
+    except Exception as e:
+        print(f"[_generate_chart_image] Error generating chart image: {e}")
+        return None

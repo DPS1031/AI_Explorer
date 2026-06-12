@@ -669,7 +669,7 @@ def render_welcome_screen():
 
 def render_chat_history():
     """Renders the chat message history, including charts from saved queries."""
-    for message in st.session_state.messages:
+    for msg_index, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
             # Show image if the user message has one attached
@@ -692,7 +692,7 @@ def render_chat_history():
                     data=message["pdf_bytes"],
                     file_name=message.get("pdf_filename", "factura.pdf"),
                     mime="application/pdf",
-                    key=f"download_pdf_{uuid.uuid4().hex[:8]}",
+                    key=f"download_pdf_{msg_index}",
                 )
             # If this assistant message has a stored SQL query, re-execute and show results
             if message.get("sql") and message["role"] == "assistant":
@@ -707,34 +707,107 @@ def render_chat_history():
                             [dict(zip(columns, row)) for row in rows],
                             use_container_width=True,
                         )
+                        # Show "send by email" button for charts/tables
+                        if message.get("offer_email") or chart_type != "NONE" or len(rows) > 1:
+                            _render_send_report_button(message, sql, columns, rows, chart_type, msg_index)
                 except Exception:
                     pass
 
 
 def render_chart(df: pd.DataFrame, chart_type: str):
     """Renders a chart based on the classified type.
-    Automatically detects the best label (categorical) and value (numeric) columns.
+    Intelligently detects the best label (categorical) and value (numeric) columns.
     """
     if chart_type == "NONE" or df.empty or len(df.columns) < 2:
         return
 
-    # Find the best label column (first string/object column) and value column (first numeric column)
-    label_col = None
-    value_col = None
-
+    # Convert Decimal columns to float (psycopg2 returns Decimal for DECIMAL fields)
     for col in df.columns:
-        if label_col is None and df[col].dtype == "object":
-            label_col = col
-        if value_col is None and pd.api.types.is_numeric_dtype(df[col]):
-            # Skip ID-like columns (all unique integers that look like sequential IDs)
-            if df[col].dtype in ["int64", "int32"] and col.lower().endswith("id"):
-                continue
-            value_col = col
+        if df[col].dtype == "object":
+            try:
+                df[col] = pd.to_numeric(df[col])
+            except (ValueError, TypeError):
+                pass
 
-    # Fallback: if no string column found, use first column as label
+    # --- Intelligent column selection ---
+    # Priority for LABEL column (X axis): name > any string column > first non-id column
+    # Priority for VALUE column (Y axis): quantity/total/sales/count/stock > price > any numeric non-id
+
+    # Columns to always skip as value
+    skip_as_value = set()
+    for col in df.columns:
+        col_lower = col.lower()
+        if col_lower in ("id", "products_id", "orders_id", "customers_id", "supplier_id", "category_id"):
+            skip_as_value.add(col)
+        elif col_lower.endswith("_id") or (col_lower == "id"):
+            skip_as_value.add(col)
+
+    # Find label column (categorical/name column for X axis)
+    label_col = None
+    label_priority = ["name", "product", "producto", "category", "status", "order_state", "laboratory", "supplier"]
+    
+    # First try: exact match on known label column names
+    for preferred in label_priority:
+        for col in df.columns:
+            if col.lower() == preferred or col.lower().replace("_", "") == preferred:
+                label_col = col
+                break
+        if label_col:
+            break
+
+    # Second try: first string/object column that isn't a long text field
+    if label_col is None:
+        for col in df.columns:
+            if df[col].dtype == "object":
+                # Skip description-like columns (average length > 50 chars)
+                avg_len = df[col].astype(str).str.len().mean()
+                if avg_len < 50:
+                    label_col = col
+                    break
+
+    # Third try: first column that isn't numeric and isn't in skip list
+    if label_col is None:
+        for col in df.columns:
+            if col not in skip_as_value and not pd.api.types.is_numeric_dtype(df[col]):
+                label_col = col
+                break
+
+    # Last resort: first column
     if label_col is None:
         label_col = df.columns[0]
-    # Fallback: if no numeric column found, use second column
+
+    # Find value column (numeric column for Y axis)
+    value_col = None
+    value_priority = ["total_sold", "total_quantity", "quantity", "total", "revenue", "sales",
+                      "count", "actual_stock", "stock", "total_sales", "units_sold", "sum"]
+
+    # First try: exact match on known value column names
+    for preferred in value_priority:
+        for col in df.columns:
+            if col.lower() == preferred or col.lower().replace("_", "") == preferred:
+                if pd.api.types.is_numeric_dtype(df[col]):
+                    value_col = col
+                    break
+        if value_col:
+            break
+
+    # Second try: "price" if nothing better found
+    if value_col is None:
+        for col in df.columns:
+            if col.lower() == "price" and pd.api.types.is_numeric_dtype(df[col]):
+                value_col = col
+                break
+
+    # Third try: any numeric column that isn't an ID and isn't the label
+    if value_col is None:
+        for col in df.columns:
+            if col == label_col or col in skip_as_value:
+                continue
+            if pd.api.types.is_numeric_dtype(df[col]):
+                value_col = col
+                break
+
+    # Last resort
     if value_col is None:
         for col in df.columns:
             if col != label_col and pd.api.types.is_numeric_dtype(df[col]):
@@ -748,9 +821,13 @@ def render_chart(df: pd.DataFrame, chart_type: str):
         chart_df[label_col] = chart_df[label_col].astype(str)
 
         if chart_type == "BAR":
-            st.bar_chart(chart_df.set_index(label_col)[value_col])
+            fig = px.bar(chart_df, x=label_col, y=value_col)
+            fig.update_layout(xaxis={'categoryorder': 'array', 'categoryarray': chart_df[label_col].tolist()})
+            st.plotly_chart(fig, use_container_width=True, key=f"bar_{uuid.uuid4().hex[:8]}")
         elif chart_type == "LINE":
-            st.line_chart(chart_df.set_index(label_col)[value_col])
+            fig = px.line(chart_df, x=label_col, y=value_col)
+            fig.update_layout(xaxis={'categoryorder': 'array', 'categoryarray': chart_df[label_col].tolist()})
+            st.plotly_chart(fig, use_container_width=True, key=f"line_{uuid.uuid4().hex[:8]}")
         elif chart_type == "PIE":
             fig = px.pie(chart_df, names=label_col, values=value_col)
             st.plotly_chart(
@@ -760,6 +837,33 @@ def render_chart(df: pd.DataFrame, chart_type: str):
         # If chart rendering fails, silently skip — the data table is still shown
         pass
 
+
+
+def _render_send_report_button(message: dict, sql: str, columns: list, rows: list, chart_type: str, msg_index: int):
+    """Renders a '📧' button for sending this report via email. Uses deterministic key based on message index."""
+    btn_key = f"send_report_{msg_index}"
+
+    if st.button("📧", key=btn_key, help="Send via email / Enviar por email"):
+        # Find the original user query that preceded this message
+        messages = st.session_state.messages
+        user_query = "Data report"
+        if msg_index > 0:
+            for i in range(msg_index - 1, -1, -1):
+                if messages[i]["role"] == "user":
+                    user_query = messages[i]["content"]
+                    break
+
+        st.session_state.last_report_data = {
+            "query": user_query,
+            "summary": message.get("content", ""),
+            "columns": columns,
+            "rows": rows,
+            "chart_type": chart_type,
+            "sql": sql,
+            "language": _detect_conversation_language(),
+        }
+        st.session_state.report_email_flow = True
+        st.rerun()
 
 
 def _detect_conversation_language() -> str:
@@ -772,11 +876,11 @@ def _detect_conversation_language() -> str:
         return "es"
 
     # English indicators
-    en_words = ["i want", "yes", "please", "thank", "order", "how much", "what", "the", "my", "can i", "i'd like", "correct", "they're", "i wan"]
+    en_words = ["i want", "show me", "top", "selling", "products", "give me", "best", "most", "which", "list", "send", "email", "please", "thank", "how much", "what is", "what are", "order by", "orders", "all products"]
     # French indicators
-    fr_words = ["je veux", "je voudrais", "je souhaite", "je prefere", "s'il vous", "merci", "combien", "bonjour", "oui", "commande", "ici mon", "va oui"]
+    fr_words = ["je veux", "je voudrais", "je souhaite", "s'il vous", "merci", "combien", "bonjour", "montrez", "envoyez", "les plus", "donnez", "tous les produits", "commandes"]
     # Spanish indicators
-    es_words = ["quiero", "por favor", "gracias", "cuanto", "dame", "ordenar", "necesito", "hola", "buenos dias", "opciones", "si"]
+    es_words = ["quiero", "por favor", "gracias", "cuanto cuesta", "dame", "ordenar", "necesito", "hola", "buenos dias", "muestrame", "los mas", "productos mas", "vendidos", "enviar", "correo", "todos los productos"]
 
     # Only look at the last 4 user messages, with exponentially more weight to recent ones
     messages_to_check = user_messages[-4:]
