@@ -358,11 +358,366 @@ def inject_custom_css():
         height=0,
     )
 
+    # --- Light theme override ---
+    if st.session_state.get("theme") == "light":
+        st.markdown(
+            """
+            <style>
+            /* ===== LIGHT THEME OVERRIDES ===== */
+
+            /* --- Base background and text --- */
+            :root {
+                color-scheme: light;
+            }
+            [data-testid="stAppViewContainer"],
+            [data-testid="stApp"],
+            .main,
+            section[data-testid="stMain"],
+            [data-testid="stMainBlockContainer"] {
+                background-color: #ffffff !important;
+                color: #1a1a1a !important;
+            }
+            [data-testid="stHeader"] {
+                background-color: #ffffff !important;
+            }
+
+            /* --- Sidebar --- */
+            [data-testid="stSidebar"],
+            [data-testid="stSidebar"] > div,
+            [data-testid="stSidebarUserContent"] {
+                background-color: #f4f6f8 !important;
+                color: #1a1a1a !important;
+            }
+            [data-testid="stSidebar"] p,
+            [data-testid="stSidebar"] span,
+            [data-testid="stSidebar"] label,
+            [data-testid="stSidebar"] h1,
+            [data-testid="stSidebar"] h2,
+            [data-testid="stSidebar"] h3,
+            [data-testid="stSidebar"] strong,
+            [data-testid="stSidebar"] small {
+                color: #1a1a1a !important;
+            }
+            /* Sidebar buttons (New Chat, Conversations, Account, Theme toggle) */
+            [data-testid="stSidebar"] button {
+                color: #1a1a1a !important;
+                background-color: #e8ecf0 !important;
+                border-color: #c8cfd6 !important;
+            }
+            [data-testid="stSidebar"] button:hover {
+                background-color: #dce2e8 !important;
+            }
+            /* Sidebar dividers */
+            [data-testid="stSidebar"] hr {
+                border-color: #d0d5db !important;
+            }
+            /* User avatar section */
+            .user-avatar-circle {
+                background: linear-gradient(135deg, #21618C, #6a4c93) !important;
+            }
+            .login-circle {
+                background: #dce2e8 !important;
+                color: #555 !important;
+            }
+
+            /* --- All buttons outside sidebar --- */
+            [data-testid="stMainBlockContainer"] button,
+            .st-key-chat_input_container button,
+            .st-key-chat_uploader_container button {
+                background-color: #e8ecf0 !important;
+                color: #1a1a1a !important;
+                border-color: #c8cfd6 !important;
+            }
+            [data-testid="stMainBlockContainer"] button:hover,
+            .st-key-chat_input_container button:hover {
+                background-color: #dce2e8 !important;
+            }
+            /* Primary buttons keep their blue */
+            button[kind="primary"],
+            [data-testid="stFormSubmitButton"] button {
+                background-color: #21618C !important;
+                color: #ffffff !important;
+                border-color: #21618C !important;
+            }
+            button[kind="primary"]:hover {
+                background-color: #1a4f73 !important;
+            }
+
+            /* --- Chat messages --- */
+            [data-testid="stChatMessage"] {
+                background-color: #f0f2f5 !important;
+                border: 1px solid #e2e5e9 !important;
+            }
+            [data-testid="stChatMessage"] p,
+            [data-testid="stChatMessage"] li,
+            [data-testid="stChatMessage"] span,
+            [data-testid="stChatMessage"] code {
+                color: #1a1a1a !important;
+            }
+
+            /* --- Text inputs (chat input, form inputs) --- */
+            [data-testid="stTextInput"] > div,
+            [data-testid="stTextInput"] > div > div {
+                background-color: #f0f2f5 !important;
+                border-color: #c8cfd6 !important;
+            }
+            [data-testid="stTextInput"] input {
+                color: #1a1a1a !important;
+                background-color: #f0f2f5 !important;
+                caret-color: #1a1a1a !important;
+            }
+            [data-testid="stTextInput"] input::placeholder {
+                color: #888888 !important;
+            }
+
+            /* --- Fixed chat input container --- */
+            .st-key-chat_input_container {
+                background: #ffffff !important;
+            }
+            .st-key-chat_uploader_container {
+                background: #ffffff !important;
+            }
+
+            /* --- Suggestion chips / horizontal buttons --- */
+            div[data-testid="stHorizontalBlock"] > div > div > button {
+                border: 1px solid #c8cfd6 !important;
+                background-color: #f0f2f5 !important;
+                color: #1a1a1a !important;
+            }
+            div[data-testid="stHorizontalBlock"] > div > div > button:hover {
+                background-color: #e2e5e9 !important;
+            }
+
+            /* --- Plotly charts --- */
+            /* Charts use template="plotly_white" in light mode via Python code */
+            /* Only override the modebar buttons for visibility */
+            .modebar-group {
+                background-color: rgba(240, 240, 240, 0.8) !important;
+            }
+            .modebar-btn path {
+                fill: rgba(0, 0, 0, 0.5) !important;
+            }
+
+            /* --- Streamlit native bar/line charts --- */
+            [data-testid="stVegaLiteChart"] {
+                background-color: #ffffff !important;
+            }
+
+            /* --- Dataframe / Table - force light over inline styles --- */
+            .stDataFrameGlideDataEditor {
+                --gdg-bg-cell: #ffffff !important;
+                --gdg-bg-cell-medium: #ffffff !important;
+                --gdg-bg-header: #f0f2f5 !important;
+                --gdg-bg-header-has-focus: #e8ecf0 !important;
+                --gdg-bg-header-hovered: #e8ecf0 !important;
+                --gdg-text-dark: #1a1a1a !important;
+                --gdg-text-medium: #444444 !important;
+                --gdg-text-light: #666666 !important;
+                --gdg-text-header: #333333 !important;
+                --gdg-text-header-selected: #1a1a1a !important;
+                --gdg-text-group-header: #333333 !important;
+                --gdg-bg-group-header: #f0f2f5 !important;
+                --gdg-border-color: #e0e0e0 !important;
+                --gdg-horizontal-border-color: #e0e0e0 !important;
+                --gdg-link-color: #21618C !important;
+                --gdg-bg-bubble: #f0f2f5 !important;
+                --gdg-text-bubble: #1a1a1a !important;
+                --gdg-bg-icon-header: #666666 !important;
+            }
+            [data-testid="stDataFrameResizable"] {
+                border-color: #e0e0e0 !important;
+            }
+            /* DataGrid toolbar buttons */
+            .stElementToolbar button {
+                background-color: transparent !important;
+            }
+            .stElementToolbar button svg {
+                fill: #666666 !important;
+                color: #666666 !important;
+            }
+            /* st.table (HTML table used in light mode) */
+            [data-testid="stTable"] table {
+                background-color: #ffffff !important;
+                color: #1a1a1a !important;
+                border-collapse: collapse !important;
+                width: 100% !important;
+                border: 1px solid #bbbbbb !important;
+            }
+            [data-testid="stTable"] th,
+            [data-testid="stTable"] .e1o8kfkp5 {
+                background-color: #f0f2f5 !important;
+                color: #333333 !important;
+                border: 1px solid #bbbbbb !important;
+                padding: 10px 12px !important;
+            }
+            [data-testid="stTable"] td,
+            [data-testid="stTable"] .e1o8kfkp4 {
+                color: #1a1a1a !important;
+                border: 1px solid #bbbbbb !important;
+                padding: 10px 12px !important;
+            }
+
+            /* --- Code blocks --- */
+            [data-testid="stCode"],
+            [data-testid="stCode"] pre,
+            [data-testid="stCode"] code {
+                background-color: #f5f7f9 !important;
+                color: #1a1a1a !important;
+            }
+
+            /* --- Markdown and general text --- */
+            .stMarkdown, .stMarkdown p, .stMarkdown li,
+            .stMarkdown span, .stMarkdown h1, .stMarkdown h2, .stMarkdown h3 {
+                color: #1a1a1a !important;
+            }
+
+            /* --- Welcome screen --- */
+            .welcome-title {
+                background: linear-gradient(135deg, #21618C, #6a4c93, #c94c4c) !important;
+                -webkit-background-clip: text !important;
+                -webkit-text-fill-color: transparent !important;
+                background-clip: text !important;
+            }
+            .welcome-subtitle {
+                color: #555555 !important;
+            }
+
+            /* --- Dialogs (email form, invoice form) --- */
+            [data-testid="stDialog"],
+            [data-testid="stDialog"] > div,
+            div[role="dialog"],
+            div[role="dialog"] > div {
+                background-color: #f4f6f8 !important;
+                color: #1a1a1a !important;
+                border: 1px solid #c8cfd6 !important;
+                border-radius: 12px !important;
+                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15) !important;
+            }
+            div[role="dialog"] p,
+            div[role="dialog"] label,
+            div[role="dialog"] span,
+            div[role="dialog"] h1,
+            div[role="dialog"] h2,
+            div[role="dialog"] h3 {
+                color: #1a1a1a !important;
+            }
+            div[role="dialog"] [data-testid="stTextInput"] > div {
+                background-color: #f0f2f5 !important;
+                border-color: #c8cfd6 !important;
+            }
+            div[role="dialog"] [data-testid="stTextInput"] input {
+                color: #1a1a1a !important;
+                background-color: #f0f2f5 !important;
+                caret-color: #1a1a1a !important;
+            }
+            div[role="dialog"] [data-testid="stSelectbox"] > div {
+                background-color: #f0f2f5 !important;
+                color: #1a1a1a !important;
+                border-color: #c8cfd6 !important;
+            }
+            div[role="dialog"] button {
+                background-color: #e8ecf0 !important;
+                color: #1a1a1a !important;
+                border-color: #c8cfd6 !important;
+            }
+            div[role="dialog"] button[kind="primary"] {
+                background-color: #21618C !important;
+                color: #ffffff !important;
+            }
+
+            /* --- File uploader --- */
+            [data-testid="stFileUploader"],
+            [data-testid="stFileUploader"] > div,
+            [data-testid="stFileUploader"] section {
+                background-color: #f0f2f5 !important;
+                border-color: #c8cfd6 !important;
+                color: #1a1a1a !important;
+            }
+            [data-testid="stFileUploader"] span,
+            [data-testid="stFileUploader"] small,
+            [data-testid="stFileUploader"] p {
+                color: #1a1a1a !important;
+            }
+            [data-testid="stFileUploader"] button {
+                background-color: #e8ecf0 !important;
+                color: #1a1a1a !important;
+            }
+
+            /* --- Remove image button (✕) --- */
+            .st-key-remove_staged_image button,
+            .st-key-remove_staged_images button,
+            .st-key-remove_welcome_staged_image button,
+            .st-key-remove_welcome_staged_images button {
+                background-color: #e8ecf0 !important;
+                color: #1a1a1a !important;
+                border-color: #c8cfd6 !important;
+            }
+
+            /* --- Selectbox dropdown --- */
+            [data-testid="stSelectbox"] > div,
+            [data-testid="stSelectbox"] > div > div {
+                background-color: #f0f2f5 !important;
+                color: #1a1a1a !important;
+                border-color: #c8cfd6 !important;
+            }
+            [data-testid="stSelectbox"] span {
+                color: #1a1a1a !important;
+            }
+
+            /* --- Labels and captions --- */
+            .stCaption, small, label {
+                color: #555555 !important;
+            }
+
+            /* --- Dividers --- */
+            hr {
+                border-color: #e0e0e0 !important;
+            }
+
+            /* --- Tabs --- */
+            [data-testid="stTabs"] button {
+                color: #1a1a1a !important;
+            }
+            [data-testid="stTabs"] button[aria-selected="true"] {
+                border-bottom-color: #21618C !important;
+                color: #21618C !important;
+            }
+
+            /* --- Spinner --- */
+            [data-testid="stSpinner"] p {
+                color: #1a1a1a !important;
+            }
+
+            /* --- Info/Warning/Error/Success boxes --- */
+            [data-testid="stAlert"] {
+                color: #1a1a1a !important;
+            }
+
+            /* --- Download button --- */
+            [data-testid="stDownloadButton"] button {
+                background-color: #e8ecf0 !important;
+                color: #1a1a1a !important;
+                border-color: #c8cfd6 !important;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
 
 def render_sidebar():
     """Renders the sidebar with New Chat at top, conversations in middle, and user avatar at bottom."""
     with st.sidebar:
-        st.title("💊 AI Explorer")
+        # --- Theme toggle at the very top ---
+        col_title, col_theme = st.columns([5, 1])
+        with col_title:
+            st.title("💊 AI Explorer")
+        with col_theme:
+            current_theme = st.session_state.get("theme", "dark")
+            theme_icon = "☀️" if current_theme == "dark" else "🌙"
+            if st.button(theme_icon, key="theme_toggle_btn", help="Toggle light/dark theme"):
+                st.session_state.theme = "light" if current_theme == "dark" else "dark"
+                st.rerun()
 
         # --- New Chat button always at the top ---
         if st.button("New chat", use_container_width=True, key="new_chat_btn"):
@@ -703,10 +1058,15 @@ def render_chat_history():
                     if rows:
                         df = pd.DataFrame(rows, columns=columns)
                         render_chart(df, chart_type)
-                        st.dataframe(
-                            [dict(zip(columns, row)) for row in rows],
-                            use_container_width=True,
-                        )
+                        # Use st.table in light mode (HTML-based, CSS-tematizable)
+                        # Use st.dataframe in dark mode (canvas-based, native dark)
+                        if st.session_state.get("theme") == "light":
+                            st.table(df)
+                        else:
+                            st.dataframe(
+                                [dict(zip(columns, row)) for row in rows],
+                                use_container_width=True,
+                            )
                         # Show "send by email" button for charts/tables
                         if message.get("offer_email") or chart_type != "NONE" or len(rows) > 1:
                             _render_send_report_button(message, sql, columns, rows, chart_type, msg_index)
@@ -820,19 +1180,33 @@ def render_chart(df: pd.DataFrame, chart_type: str):
         chart_df = df[[label_col, value_col]].copy()
         chart_df[label_col] = chart_df[label_col].astype(str)
 
+        # Use white background template in light theme
+        is_light = st.session_state.get("theme") == "light"
+        chart_template = "plotly_white" if is_light else "plotly_dark"
+
         if chart_type == "BAR":
-            fig = px.bar(chart_df, x=label_col, y=value_col)
+            fig = px.bar(chart_df, x=label_col, y=value_col, template=chart_template)
             fig.update_layout(xaxis={'categoryorder': 'array', 'categoryarray': chart_df[label_col].tolist()})
-            st.plotly_chart(fig, use_container_width=True, key=f"bar_{uuid.uuid4().hex[:8]}")
         elif chart_type == "LINE":
-            fig = px.line(chart_df, x=label_col, y=value_col)
+            fig = px.line(chart_df, x=label_col, y=value_col, template=chart_template)
             fig.update_layout(xaxis={'categoryorder': 'array', 'categoryarray': chart_df[label_col].tolist()})
-            st.plotly_chart(fig, use_container_width=True, key=f"line_{uuid.uuid4().hex[:8]}")
         elif chart_type == "PIE":
-            fig = px.pie(chart_df, names=label_col, values=value_col)
-            st.plotly_chart(
-                fig, use_container_width=True, key=f"pie_{uuid.uuid4().hex[:8]}"
+            fig = px.pie(chart_df, names=label_col, values=value_col, template=chart_template)
+        else:
+            return
+
+        # Force background colors explicitly for light theme
+        if is_light:
+            fig.update_layout(
+                paper_bgcolor="#ffffff",
+                plot_bgcolor="#ffffff",
+                font_color="#1a1a1a",
+                legend=dict(bgcolor="#ffffff", font=dict(color="#1a1a1a")),
+                xaxis=dict(tickfont=dict(color="#1a1a1a"), title_font=dict(color="#1a1a1a"), gridcolor="#e0e0e0", zerolinecolor="#cccccc"),
+                yaxis=dict(tickfont=dict(color="#1a1a1a"), title_font=dict(color="#1a1a1a"), gridcolor="#e0e0e0", zerolinecolor="#cccccc"),
             )
+
+        st.plotly_chart(fig, use_container_width=True, key=f"{chart_type.lower()}_{uuid.uuid4().hex[:8]}")
     except Exception:
         # If chart rendering fails, silently skip — the data table is still shown
         pass

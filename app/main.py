@@ -44,6 +44,9 @@ def main():
     if "chat_started" not in st.session_state:
         st.session_state.chat_started = False
 
+    if "theme" not in st.session_state:
+        st.session_state.theme = "dark"
+
     if "input_to_process" not in st.session_state:
         st.session_state.input_to_process = None
 

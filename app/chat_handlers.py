@@ -519,10 +519,13 @@ def handle_database_query(prompt: str):
         df = pd.DataFrame(rows, columns=columns)
         render_chart(df, chart_type)
 
-        st.dataframe(
-            [dict(zip(columns, row)) for row in rows],
-            use_container_width=True,
-        )
+        if st.session_state.get("theme") == "light":
+            st.table(df)
+        else:
+            st.dataframe(
+                [dict(zip(columns, row)) for row in rows],
+                use_container_width=True,
+            )
 
         response_text = sanitize_response(summarize_query_results(prompt, columns, rows, history=st.session_state.messages[-4:], language=_detect_conversation_language()))
     else:
