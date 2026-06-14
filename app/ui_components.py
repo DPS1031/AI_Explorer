@@ -663,6 +663,42 @@ def inject_custom_css():
             [data-testid="stSelectbox"] span {
                 color: #1a1a1a !important;
             }
+            /* Selectbox dropdown menu (popover list) */
+            [data-baseweb="popover"],
+            [data-baseweb="popover"] > div,
+            [data-baseweb="popover"] > div > div,
+            [data-testid="stSelectboxVirtualDropdown"],
+            [data-testid="stSelectboxVirtualDropdown"] > div,
+            [data-testid="stSelectboxVirtualDropdown"] > div > div {
+                background-color: #ffffff !important;
+                color: #1a1a1a !important;
+            }
+            [data-testid="stSelectboxVirtualDropdown"] li {
+                background-color: #ffffff !important;
+                color: #1a1a1a !important;
+            }
+            [data-testid="stSelectboxVirtualDropdown"] li:hover {
+                background-color: #e8ecf0 !important;
+            }
+            [data-testid="stSelectboxVirtualDropdown"] li[aria-selected="true"] {
+                background-color: #e8ecf0 !important;
+            }
+            [data-testid="stSelectboxVirtualDropdown"] li div,
+            [data-testid="stSelectboxVirtualDropdown"] li span {
+                color: #1a1a1a !important;
+            }
+            ul[role="listbox"],
+            ul[role="listbox"] > li {
+                background-color: #ffffff !important;
+                color: #1a1a1a !important;
+            }
+            ul[role="listbox"] > li:hover,
+            ul[role="listbox"] > li[aria-selected="true"] {
+                background-color: #e8ecf0 !important;
+            }
+            ul[role="listbox"] > li span {
+                color: #1a1a1a !important;
+            }
 
             /* --- Labels and captions --- */
             .stCaption, small, label {
