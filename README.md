@@ -9,9 +9,9 @@
 
 An AI-powered pharmacy assistant that combines natural language understanding with real-time database access. Customers can ask health questions, get product recommendations, identify medications from photos, place orders through conversation, and receive PDF invoices via email — all in a single chat interface. Built from scratch with Python, Streamlit, OpenAI GPT-4o-mini, and PostgreSQL, deployed on AWS.
 
-> 🔐 **Credentials:** `maria@pharmacy.com` / `123456`
-
 > 👤 **Author:** [David Pedroza Sánchez](https://www.linkedin.com/in/david-pedroza-sanchez-9525b0346)
+
+> 🔐 **Credentials:** `maria@pharmacy.com` / `123456`
 
 ---
 
